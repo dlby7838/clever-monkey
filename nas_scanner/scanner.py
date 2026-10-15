@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import inspect
 from functools import wraps
 import math
 import tempfile
@@ -12,6 +13,8 @@ import sqlite3
 import subprocess
 import time
 
+from .safety import local_output, readonly_source, StorageSafetyError
+
 EXTENSIONS = {'.mp4', '.mov', '.m4v', '.mkv', '.avi', '.mts', '.m2ts', '.webm'}
 
 
@@ -20,6 +23,7 @@ class ScanError(RuntimeError):
 
 
 def connect(path: Path) -> sqlite3.Connection:
+    path = local_output(path, database=True)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path)
     db.row_factory = sqlite3.Row
@@ -66,7 +70,13 @@ def probe(path: Path, executable: str, timeout: float) -> dict:
 def single_instance(function):
     @wraps(function)
     def locked(root, database, *args, **kwargs):
-        lock_path = Path(str(database.resolve()) + '.lock')
+        database = local_output(database, (root,), database=True)
+        options = inspect.signature(function).bind(root, database, *args, **kwargs)
+        options.apply_defaults()
+        cache = options.arguments['cache_dir'] or Path(tempfile.gettempdir())
+        local_output(cache, (root,))
+        readonly_source(root, options.arguments['allow_local'])
+        lock_path = local_output(Path(str(database) + '.lock'), (root,))
         if lock_path.is_relative_to(root.resolve()):
             raise ScanError('Database must be outside the material root')
         lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -120,6 +130,7 @@ def scan(root: Path, database: Path, stable_seconds: float = 30,
         raise ScanError('Marker must be a relative path inside the root')
 
     def health():
+        readonly_source(root, allow_local)
         if not root.is_dir():
             raise ScanError(f'Root unavailable: {root}')
         if not allow_local and not any(os.path.ismount(p) for p in (root, *root.parents) if p != Path('/')):
@@ -133,7 +144,7 @@ def scan(root: Path, database: Path, stable_seconds: float = 30,
             return digest
         return None
 
-    cache_dir = (cache_dir or Path(tempfile.gettempdir())).resolve()
+    cache_dir = local_output(cache_dir or Path(tempfile.gettempdir()), (root,))
     if cache_dir.is_relative_to(root):
         raise ScanError('Cache must be outside the material root')
     cache_dir.mkdir(parents=True, exist_ok=True)

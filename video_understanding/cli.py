@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import sqlite3
 import sys
+from nas_scanner.safety import StorageSafetyError
 from nas_scanner.scanner import ScanError
 from .pipeline import AnalysisError, analyze
 
@@ -24,7 +25,7 @@ def main():
     try:
         print(json.dumps(analyze(**vars(parser.parse_args())), ensure_ascii=False, indent=2))
         return 0
-    except (AnalysisError, ScanError, OSError, sqlite3.Error) as exc:
+    except (AnalysisError, ScanError, StorageSafetyError, OSError, sqlite3.Error) as exc:
         print(str(exc), file=sys.stderr)
         return 2
 

@@ -7,9 +7,11 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import time
+import tempfile
 import urllib.error
 import urllib.request
 
+from nas_scanner.safety import local_output
 from nas_scanner.scanner import probe, ScanError, signature
 
 from .preprocess import PROFILE, compressed_video
@@ -99,7 +101,9 @@ def ark_result(video, model, fps, timeout):
 def analyze(video: Path, database: Path, provider='mock', model='', fps=1.0, timeout=60,
             ffprobe='ffprobe', max_duration=30, ffmpeg='ffmpeg',
             compression_timeout=180, temp_dir: Path | None = None):
-    video, database = video.resolve(), database.resolve()
+    video = video.resolve()
+    database = local_output(database, (video,), database=True)
+    temp_dir = local_output(temp_dir or Path(tempfile.gettempdir()), (video,))
     if video == database:
         raise AnalysisError('Output database cannot overwrite the input video')
     if provider not in ('mock', 'ark'):

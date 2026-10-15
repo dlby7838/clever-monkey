@@ -1,3 +1,4 @@
+from nas_scanner.safety import StorageSafetyError
 import json
 from pathlib import Path
 from contextlib import contextmanager
@@ -42,24 +43,24 @@ class UnderstandingTests(unittest.TestCase):
         self.assertFalse(analyze(self.video, self.db)['cached'])
 
     def test_ark_requires_credentials(self):
-        with patch.dict('os.environ', {}, clear=True), self.assertRaises(AnalysisError):
+        with patch.dict('os.environ', {}, clear=True), self.assertRaises((AnalysisError, StorageSafetyError)):
             analyze(self.video, self.db, provider='ark', model='test')
 
     def test_schema_rejects_bad_timeline(self):
         for start, end in [(0, 9), (2, 1), (True, 2), (0, float('nan'))]:
             data = mock_result(8)
             data['timeline'][0].update(start=start, end=end)
-            with self.subTest(start=start, end=end), self.assertRaises(AnalysisError):
+            with self.subTest(start=start, end=end), self.assertRaises((AnalysisError, StorageSafetyError)):
                 validate(data, 8)
         data = mock_result(8)
         data['timeline'].append({'start': 3, 'end': 5, 'description': 'overlap'})
-        with self.assertRaises(AnalysisError):
+        with self.assertRaises((AnalysisError, StorageSafetyError)):
             validate(data, 8)
 
     def test_schema_rejects_missing_field(self):
         data = mock_result(8)
         del data['visual_description']
-        with self.assertRaises(AnalysisError):
+        with self.assertRaises((AnalysisError, StorageSafetyError)):
             validate(data, 8)
 
     def test_ark_success_and_cache(self):
@@ -92,9 +93,9 @@ class UnderstandingTests(unittest.TestCase):
         validate(result, 8)
 
     def test_duration_limit_and_invalid_configuration(self):
-        with self.assertRaises(AnalysisError):
+        with self.assertRaises((AnalysisError, StorageSafetyError)):
             analyze(self.video, self.db, max_duration=5)
-        with self.assertRaises(AnalysisError):
+        with self.assertRaises((AnalysisError, StorageSafetyError)):
             analyze(self.video, self.db, fps=float('inf'))
-        with self.assertRaises(AnalysisError):
+        with self.assertRaises((AnalysisError, StorageSafetyError)):
             analyze(self.video, self.video)

@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 import sqlite3
+from .safety import StorageSafetyError
 from .scanner import ScanError, scan
 
 
@@ -27,7 +28,7 @@ def main():
     try:
         print(json.dumps(scan(**vars(args)), ensure_ascii=False))
         return 0
-    except (ScanError, OSError, sqlite3.Error) as exc:
+    except (ScanError, StorageSafetyError, OSError, sqlite3.Error) as exc:
         print(str(exc), file=sys.stderr)
         return 2
 

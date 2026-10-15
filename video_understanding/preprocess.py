@@ -3,12 +3,14 @@ from contextlib import contextmanager
 from pathlib import Path
 import subprocess
 import tempfile
+from nas_scanner.safety import local_output
 
 PROFILE = 'h264-fit1280x720-crf24-noaudio-v1'
 
 
 @contextmanager
 def compressed_video(source, ffmpeg='ffmpeg', timeout=180, temp_dir=None):
+    temp_dir = local_output(temp_dir or Path(tempfile.gettempdir()), (source,))
     # Orientation-aware bounding box; preserve aspect ratio and never upscale.
     scale = ("scale=w='if(gte(iw,ih),min(1280,iw),min(720,iw))':"
              "h='if(gte(iw,ih),min(720,ih),min(1280,ih))':"

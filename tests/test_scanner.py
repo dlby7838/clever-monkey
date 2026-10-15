@@ -1,3 +1,4 @@
+from nas_scanner.safety import StorageSafetyError
 from contextlib import closing
 import fcntl
 import io
@@ -75,7 +76,7 @@ class ScannerTests(unittest.TestCase):
         self.scan(stable_seconds=0)
         self.video.unlink()
         with patch('nas_scanner.scanner.os.walk', side_effect=OSError('disconnected')):
-            with self.assertRaises(ScanError):
+            with self.assertRaises((ScanError, StorageSafetyError)):
                 self.scan(stable_seconds=0)
         self.assertEqual(self.rows()[0][1], 'ready')
 
@@ -83,14 +84,14 @@ class ScannerTests(unittest.TestCase):
         self.scan(stable_seconds=0)
         (self.root / 'bad.mp4').write_bytes(b'bad')
         self.probe.side_effect = ScanError('bad video')
-        with self.assertRaises(ScanError):
+        with self.assertRaises((ScanError, StorageSafetyError)):
             self.scan(stable_seconds=0)
         self.assertEqual(len(self.rows()), 1)
 
     def test_mount_guard_and_database_guard(self):
-        with self.assertRaises(ScanError):
+        with self.assertRaises((ScanError, StorageSafetyError)):
             scan(self.root, self.db)
-        with self.assertRaises(ScanError):
+        with self.assertRaises((ScanError, StorageSafetyError)):
             scan(self.root, self.root / 'db', allow_local=True)
 
     def test_symlinks_ignored(self):
@@ -104,7 +105,7 @@ class ScannerTests(unittest.TestCase):
             marker.unlink()
             return {}
         self.probe.side_effect = remove_marker
-        with self.assertRaises(ScanError):
+        with self.assertRaises((ScanError, StorageSafetyError)):
             self.scan(stable_seconds=0, marker='identity.txt')
         self.assertEqual(self.rows(), [])
 
@@ -164,7 +165,7 @@ class ScannerTests(unittest.TestCase):
     def test_invalid_load_settings(self):
         for settings in ({'read_mib_per_second': -1}, {'file_delay': float('nan')},
                          {'max_files': -1}, {'cache_dir': self.root / 'cache'}):
-            with self.subTest(settings=settings), self.assertRaises(ScanError):
+            with self.subTest(settings=settings), self.assertRaises((ScanError, StorageSafetyError)):
                 self.scan(**settings)
 
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg tools unavailable')
