@@ -10,7 +10,8 @@ requires-python = ">=3.11"
 dependencies = []
 
 [project.scripts]
+video-analyze = "video_understanding.cli:main"
 nas-scanner = "nas_scanner.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["nas_scanner*"]
+include = ["nas_scanner*", "video_understanding*"]
