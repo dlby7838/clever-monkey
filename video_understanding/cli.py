@@ -18,6 +18,9 @@ def main():
     parser.add_argument('--timeout', type=float, default=60)
     parser.add_argument('--max-duration', type=float, default=30)
     parser.add_argument('--ffprobe', default='ffprobe')
+    parser.add_argument('--ffmpeg', default='ffmpeg')
+    parser.add_argument('--compression-timeout', type=float, default=180)
+    parser.add_argument('--temp-dir', type=Path, help='Existing local temporary directory')
     try:
         print(json.dumps(analyze(**vars(parser.parse_args())), ensure_ascii=False, indent=2))
         return 0

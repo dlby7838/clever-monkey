@@ -107,3 +107,5 @@ NAS 实机验证留待下次，当前可先使用本地视频进行 P1 验证。
 ```bash
 python3 -m video_understanding.cli --video '/本地路径/sample.mp4' --provider mock
 ```
+
+P1 现已默认自动生成 720p/H.264 临时分析副本，分析成功或失败后删除；原片保留，仅 SQLite 分析结果长期保存。原片可超过 40 MiB，压缩后副本仍有 40 MiB 上传保护。需要 FFmpeg 与 FFprobe。

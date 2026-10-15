@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from contextlib import contextmanager
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,6 +18,12 @@ class UnderstandingTests(unittest.TestCase):
         self.video.write_bytes(b'local test')
         self.db = self.root / 'p1.db'
         mock = patch('video_understanding.pipeline.probe', return_value={'duration': '8'})
+        @contextmanager
+        def fake_compression(video, *args):
+            yield video
+        compression = patch('video_understanding.pipeline.compressed_video', side_effect=fake_compression)
+        compression.start()
+        self.addCleanup(compression.stop)
         mock.start()
         self.addCleanup(mock.stop)
 
