@@ -1,4 +1,7 @@
 from contextlib import closing
+import fcntl
+import io
+import os
 import json
 from pathlib import Path
 import shutil
@@ -8,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from nas_scanner.scanner import ScanError, scan
+from nas_scanner.scanner import ScanError, scan, read_video
 
 
 class ScannerTests(unittest.TestCase):
@@ -104,6 +107,65 @@ class ScannerTests(unittest.TestCase):
         with self.assertRaises(ScanError):
             self.scan(stable_seconds=0, marker='identity.txt')
         self.assertEqual(self.rows(), [])
+
+    def test_unchanged_files_do_not_read_video(self):
+        self.scan(stable_seconds=0)
+        with patch('nas_scanner.scanner.read_video', side_effect=AssertionError('unexpected read')):
+            result = self.scan(stable_seconds=0)
+        self.assertEqual(result['reused'], 1)
+        self.assertEqual(result['bytes_read'], 0)
+
+    def test_budget_continues_next_run_without_missing(self):
+        (self.root / 'b.mp4').write_bytes(b'second video')
+        result = self.scan(stable_seconds=0, max_files=1)
+        self.assertEqual(result['hashed'], 1)
+        self.assertEqual(result['deferred'], 1)
+        self.assertEqual(result['missing'], 0)
+        result = self.scan(stable_seconds=0, max_files=1)
+        self.assertEqual(result['hashed'], 1)
+        self.assertEqual(result['ready'], 2)
+
+    def test_rehash_detects_preserved_mtime_replacement(self):
+        self.scan(stable_seconds=0)
+        original_sha = self.rows()[0][2]
+        stat = self.video.stat()
+        self.video.write_bytes(b'X' * stat.st_size)
+        os.utime(self.video, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        self.assertEqual(self.scan(stable_seconds=0)['reused'], 1)
+        self.assertEqual(self.scan(stable_seconds=0, rehash=True)['hashed'], 1)
+        self.assertNotEqual(self.rows()[0][2], original_sha)
+
+    def test_probe_reads_local_copy_and_removes_it(self):
+        cache = self.base / 'cache'
+        self.scan(stable_seconds=0, cache_dir=cache)
+        local_path = self.probe.call_args.args[0]
+        self.assertEqual(local_path.parent, cache.resolve())
+        self.assertFalse(local_path.exists())
+        self.assertEqual(list(cache.iterdir()), [])
+
+    def test_read_pacing_and_unlimited(self):
+        self.video.write_bytes(b'x' * (512 * 1024))
+        with patch('nas_scanner.scanner.time.monotonic', return_value=0), \
+                patch('nas_scanner.scanner.time.sleep') as sleep:
+            _, size = read_video(self.video, io.BytesIO(), 1)
+        self.assertEqual(size, 512 * 1024)
+        self.assertEqual([c.args[0] for c in sleep.call_args_list], [0.25, 0.25])
+        with patch('nas_scanner.scanner.time.sleep') as sleep:
+            read_video(self.video, io.BytesIO(), 0)
+        sleep.assert_not_called()
+
+    def test_single_instance(self):
+        with Path(str(self.db) + '.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaisesRegex(ScanError, 'Another scan'):
+                self.scan()
+        self.assertEqual(self.scan(stable_seconds=0)['ready'], 1)
+
+    def test_invalid_load_settings(self):
+        for settings in ({'read_mib_per_second': -1}, {'file_delay': float('nan')},
+                         {'max_files': -1}, {'cache_dir': self.root / 'cache'}):
+            with self.subTest(settings=settings), self.assertRaises(ScanError):
+                self.scan(**settings)
 
     @unittest.skipUnless(shutil.which('ffmpeg') and shutil.which('ffprobe'), 'FFmpeg tools unavailable')
     def test_real_ffprobe(self):

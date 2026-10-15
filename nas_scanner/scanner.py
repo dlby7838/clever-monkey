@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import fcntl
+from functools import wraps
+import math
+import tempfile
 import hashlib
 import json
 import os
@@ -59,14 +63,58 @@ def probe(path: Path, executable: str, timeout: float) -> dict:
         raise ScanError(f'FFprobe failed for {path}: {exc}') from exc
 
 
+def single_instance(function):
+    @wraps(function)
+    def locked(root, database, *args, **kwargs):
+        lock_path = Path(str(database.resolve()) + '.lock')
+        if lock_path.is_relative_to(root.resolve()):
+            raise ScanError('Database must be outside the material root')
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        with lock_path.open('a') as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise ScanError('Another scan is using this database') from exc
+            return function(root, database, *args, **kwargs)
+    return locked
+
+
+def read_video(path, destination, rate_mib):
+    """Pace each read, with at most one 256 KiB burst; stage for local probing."""
+    hasher = hashlib.sha256()
+    total = 0
+    with path.open('rb') as source:
+        while True:
+            started = time.monotonic()
+            block = source.read(256 * 1024)
+            if not block:
+                break
+            hasher.update(block)
+            destination.write(block)
+            total += len(block)
+            if rate_mib:
+                delay = len(block) / (rate_mib * 1024 * 1024) - (time.monotonic() - started)
+                if delay > 0:
+                    time.sleep(delay)
+    destination.flush()
+    return hasher.hexdigest(), total
+
+
+@single_instance
+
 def scan(root: Path, database: Path, stable_seconds: float = 30,
          ffprobe: str = 'ffprobe', timeout: float = 30,
-         allow_local: bool = False, marker: str | None = None) -> dict:
+         allow_local: bool = False, marker: str | None = None,
+         read_mib_per_second: float = 5, file_delay: float = 0.1,
+         directory_delay: float = 0.02, max_files: int = 20,
+         rehash: bool = False, cache_dir: Path | None = None) -> dict:
     root = root.resolve()
     database = database.resolve()
     if database.is_relative_to(root):
         raise ScanError('Database must be outside the material root')
-    if stable_seconds < 0 or timeout <= 0:
+    if (any(not math.isfinite(v) or v < 0 for v in
+            (stable_seconds, read_mib_per_second, file_delay, directory_delay))
+            or not math.isfinite(timeout) or timeout <= 0 or max_files < 0):
         raise ScanError('Invalid timing settings')
     if marker and (Path(marker).is_absolute() or '..' in Path(marker).parts):
         raise ScanError('Marker must be a relative path inside the root')
@@ -85,10 +133,15 @@ def scan(root: Path, database: Path, stable_seconds: float = 30,
             return digest
         return None
 
+    cache_dir = (cache_dir or Path(tempfile.gettempdir())).resolve()
+    if cache_dir.is_relative_to(root):
+        raise ScanError('Cache must be outside the material root')
+    cache_dir.mkdir(parents=True, exist_ok=True)
     initial_health = health()
     initial_root = signature(root)[2:]
     db = connect(database)
-    counts = {'ready': 0, 'pending': 0, 'missing': 0, 'moved': 0, 'duplicates': 0}
+    counts = {'ready': 0, 'pending': 0, 'missing': 0, 'moved': 0, 'duplicates': 0,
+              'reused': 0, 'deferred': 0, 'hashed': 0, 'bytes_read': 0}
     now = time.time()
     try:
         with db:
@@ -100,11 +153,15 @@ def scan(root: Path, database: Path, stable_seconds: float = 30,
             def walk_error(exc):
                 raise exc
             for directory, dirs, names in os.walk(root, followlinks=False, onerror=walk_error):
+                if directory_delay:
+                    time.sleep(directory_delay)
                 dirs[:] = sorted(d for d in dirs if not (Path(directory) / d).is_symlink())
                 for name in sorted(names):
                     path = Path(directory) / name
                     if path.is_symlink() or path.suffix.lower() not in EXTENSIONS:
                         continue
+                    if file_delay:
+                        time.sleep(file_delay)
                     relative = str(path.relative_to(root))
                     before = signature(path)
                     seen.add(relative)
@@ -113,21 +170,30 @@ def scan(root: Path, database: Path, stable_seconds: float = 30,
                     stable_since = previous['stable_since'] if unchanged else now
                     sha = previous['sha256'] if unchanged else None
                     status = 'pending'
-                    if now - stable_since >= stable_seconds:
-                        # Re-hash even known files: detect same-size replacements with preserved mtime.
-                        hasher = hashlib.sha256()
-                        with path.open('rb') as source:
-                            for block in iter(lambda: source.read(1024 * 1024), b''):
-                                hasher.update(block)
-                        sha = hasher.hexdigest()
-                        content = db.execute('SELECT 1 FROM contents WHERE sha256=?', (sha,)).fetchone()
-                        if not content:
-                            metadata = probe(path, ffprobe, timeout)
-                            db.execute('INSERT INTO contents VALUES (?,?)', (sha, json.dumps(metadata)))
-                        if signature(path) != before:
-                            raise ScanError(f'File changed during processing: {path}')
+                    cached = unchanged and sha and previous['status'] == 'ready'
+                    if cached and not rehash:
                         status = 'ready'
-                        processed.append((path, before))
+                        counts['reused'] += 1
+                    elif now - stable_since >= stable_seconds:
+                        if max_files and counts['hashed'] >= max_files:
+                            counts['deferred'] += 1
+                            status = 'ready' if cached else 'pending'
+                            if not cached:
+                                sha = None
+                        else:
+                            # FFprobe reads a local temporary copy, never an unthrottled SMB path.
+                            with tempfile.NamedTemporaryFile(suffix=path.suffix, dir=cache_dir) as local:
+                                sha, size = read_video(path, local, read_mib_per_second)
+                                counts['bytes_read'] += size
+                                counts['hashed'] += 1
+                                content = db.execute('SELECT 1 FROM contents WHERE sha256=?', (sha,)).fetchone()
+                                if not content:
+                                    metadata = probe(Path(local.name), ffprobe, timeout)
+                                    db.execute('INSERT INTO contents VALUES (?,?)', (sha, json.dumps(metadata)))
+                            if signature(path) != before:
+                                raise ScanError(f'File changed during processing: {path}')
+                            status = 'ready'
+                            processed.append((path, before))
                     else:
                         sha = None
                     db.execute('''INSERT INTO files(root_id,path,size,mtime_ns,stable_since,sha256,status,last_seen)
