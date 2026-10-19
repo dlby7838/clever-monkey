@@ -74,9 +74,12 @@ def request_response(video, model, timeout=600, service_tier='flex', duration=No
                 'request_id': exc.headers.get('x-request-id')}
 
 
-def run(testset, output, catalog_path, resume=False, service_tier='flex'):
+def run(testset, output, catalog_path, resume=False, service_tier='flex', all_samples=False, budget_cny='2'):
     if service_tier not in ('flex', 'default'):
         raise ValueError('Unsupported service tier')
+    budget = Decimal(str(budget_cny))
+    if not budget.is_finite() or budget <= 0:
+        raise ValueError('Budget must be finite and positive')
     load_local_config()
     if not os.environ.get('ARK_API_KEY'):
         raise ValueError('ARK_API_KEY missing')
@@ -86,11 +89,12 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex'):
     manifest = json.loads((testset / 'manifest.json').read_text())
     rows = manifest['files']
     needles = ('袋中展示/', 'R搅拌酸奶/', 'R包装配料营养成分gi/', 'A模特拿产品展示/', '沉浸式倒牛奶/')
-    selected = [next(r for r in rows if needle in r['source_relative_path']) for needle in needles]
+    selected = rows if all_samples else [next(r for r in rows if needle in r['source_relative_path']) for needle in needles]
     models = [m for m in json.loads(catalog_path.read_text())['models'] if m['role'] != 'historical_reference_optional']
     report = {'status': 'running', 'planned_requests': len(selected) * len(models), 'prompt_version': PROMPT_VERSION,
               'compression_profile': PROFILE, 'fps': 1, 'thinking': 'disabled', 'service_tier': service_tier,
-              'sample_selection': 'fixed coverage pilot, not representative of all 100 clips',
+              'sample_selection': 'all manifest files' if all_samples else 'fixed coverage pilot, not representative of all 100 clips',
+              'budget_cny': str(budget),
               'samples': selected, 'models': models, 'attempts': [], 'known_list_price_cny': '0',
               'billing_note': 'Usage × dated public rates; not an account invoice. Failed/time-out charges may be unknown.'}
     if resume:
@@ -99,6 +103,8 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex'):
             raise ValueError('Cannot change prompt version while resuming')
         if report.get('service_tier', 'default') != service_tier:
             raise ValueError('Cannot change service tier while resuming a run')
+        if Decimal(report.get('budget_cny', '2')) != budget:
+            raise ValueError('Cannot change budget while resuming')
         if report['samples'] != selected or report['models'] != models:
             raise ValueError('Resume configuration differs from the recorded run')
         if any(a['status'] == 'sent' or a['status'] == 'transport_error_cost_unknown' for a in report['attempts']):
@@ -122,8 +128,8 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex'):
                     digest.update(block)
             if digest.hexdigest() != sample['sha256']:
                 raise ValueError('Local source fingerprint changed')
-            print(f'Preparing sample {sample_no}/5 ({sample["metadata"]["duration"]} seconds)', flush=True)
-            with compressed_video(video, timeout=300, temp_dir=output) as proxy:
+            print(f'Preparing sample {sample_no}/{len(selected)} ({sample["metadata"]["duration"]} seconds)', flush=True)
+            with compressed_video(video, timeout=900, temp_dir=output) as proxy:
                 metadata = probe(proxy, 'ffprobe', 30)
                 duration = visual_duration(metadata)
                 source_metadata = probe(video, 'ffprobe', 30)
@@ -134,8 +140,8 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex'):
                     if model['model_id'] in skip or (sample_no, model['model_id']) in attempted:
                         continue
                     # Soft safety stop after received usage; no automatic retries on unknown-cost errors.
-                    if Decimal(report['known_list_price_cny']) >= Decimal('2'):
-                        report['stop_reason'] = 'Reached CNY 2 received-usage safety threshold'
+                    if Decimal(report['known_list_price_cny']) >= budget:
+                        report['stop_reason'] = f'Reached CNY {budget} received-usage safety threshold'
                         stop = True
                         break
                     attempt = {'sample': sample_no, 'model': model['name'], 'requested_model': model['model_id'],
@@ -211,5 +217,7 @@ if __name__ == '__main__':
     parser.add_argument('--service-tier', choices=['flex','default'], default='flex')
     parser.add_argument('--resume', action='store_true', help='Resume known completed attempts without repeating requests')
     parser.add_argument('--catalog', type=Path, default=Path('docs/evaluation/model-catalog-2026-10-19.json'))
+    parser.add_argument('--all-samples', action='store_true', help='Evaluate every local manifest entry')
+    parser.add_argument('--budget-cny', default='2', help='Soft received-usage stop; one request can overshoot')
     args = parser.parse_args()
-    run(args.testset, args.output, args.catalog, args.resume, args.service_tier)
+    run(args.testset, args.output, args.catalog, args.resume, args.service_tier, args.all_samples, args.budget_cny)

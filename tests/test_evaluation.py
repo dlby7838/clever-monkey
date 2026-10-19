@@ -28,6 +28,16 @@ class VisualDurationTests(unittest.TestCase):
 
 
 class ResumeTests(unittest.TestCase):
+    def test_invalid_budget_rejected_before_loading_credentials(self):
+        from unittest.mock import patch
+        from pathlib import Path
+        from video_understanding.evaluation import run
+        for budget in ('0', '-1', 'NaN', 'Infinity'):
+            with self.subTest(budget=budget), patch('video_understanding.evaluation.load_local_config') as load:
+                with self.assertRaises(ValueError):
+                    run(Path('unused'), Path('unused'), Path('unused'), budget_cny=budget)
+                load.assert_not_called()
+
     def test_resume_never_repeats_completed_paid_requests(self):
         import hashlib
         import json
