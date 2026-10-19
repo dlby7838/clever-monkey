@@ -59,6 +59,20 @@ def validate(data, duration):
     return data
 
 
+def visual_duration(metadata):
+    """Use video stream length: an audio tail is not part of visual analysis."""
+    for stream in metadata.get('raw', {}).get('streams', []):
+        if stream.get('codec_type') == 'video':
+            try:
+                value = float(stream['duration'])
+                if math.isfinite(value) and value > 0:
+                    return value
+            except (ValueError, TypeError, KeyError):
+                pass
+            break
+    return float(metadata['duration'])
+
+
 def mock_result(duration):
     return { 'summary': '模拟结果：未进行视觉理解',
              'visual_description': '此结果仅验证流程，不代表视频画面。',
@@ -119,7 +133,7 @@ def analyze(video: Path, database: Path, provider='mock', model='', fps=1.0, tim
     before = signature(video)
     metadata = probe(video, ffprobe, timeout)
     try:
-        duration = float(metadata['duration'])
+        duration = visual_duration(metadata)
     except (KeyError, TypeError, ValueError):
         raise AnalysisError('Video duration unavailable') from None
     if not math.isfinite(duration) or not 0 < duration <= max_duration:
@@ -147,7 +161,7 @@ def analyze(video: Path, database: Path, provider='mock', model='', fps=1.0, tim
         try:
             with compressed_video(video, ffmpeg, compression_timeout, temp_dir) as proxy:
                 proxy_metadata = probe(proxy, ffprobe, timeout)
-                proxy_duration = float(proxy_metadata['duration'])
+                proxy_duration = visual_duration(proxy_metadata)
                 if not math.isfinite(proxy_duration) or abs(proxy_duration - duration) > 0.25:
                     raise AnalysisError('Compression changed video duration')
                 compression = {'profile': PROFILE, 'original_bytes': before[0],
