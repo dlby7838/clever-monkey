@@ -21,7 +21,7 @@ ENDPOINT = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
 
 def price_usage(usage, model, tier='default'):
     """Public list-price estimate; missing accounting is never silently zero."""
-    if tier != 'default' or not isinstance(usage, dict):
+    if tier not in ('default', 'flex') or not isinstance(usage, dict):
         return None
     prompt, completion = usage.get('prompt_tokens'), usage.get('completion_tokens')
     if any(isinstance(v, bool) or not isinstance(v, int) or v < 0 for v in (prompt, completion)):
@@ -41,20 +41,22 @@ def price_usage(usage, model, tier='default'):
     in_rate = Decimal(str(model['input_price'])) * factor
     out_rate = Decimal(str(model['output_price'])) * factor
     # Catalog's compared models all use 20% of uncached input list price for cache hits.
-    cost = ((prompt - cached) * in_rate + cached * in_rate * Decimal('0.2') + completion * out_rate) / 1000000
+    discount = Decimal('0.5') if tier == 'flex' else Decimal(1)
+    cost = ((prompt - cached) * in_rate * discount + cached * in_rate * Decimal('0.2') + completion * out_rate * discount) / 1000000
     return str(cost)
 
 
-def request_response(video, model, timeout=120):
+def request_response(video, model, timeout=600, service_tier='flex'):
     raw = video.read_bytes()
     if len(raw) > 40 * 1024 * 1024:
         raise ValueError('Proxy exceeds 40 MiB')
     payload = {'model': model, 'messages': [{'role': 'user', 'content': [
         {'type': 'video_url', 'video_url': {'url': 'data:video/mp4;base64,' + base64.b64encode(raw).decode(), 'fps': 1}},
         {'type': 'text', 'text': PROMPT}]}], 'response_format': {'type': 'json_object'},
-        'max_tokens': 2000, 'thinking': {'type': 'disabled'}, 'service_tier': 'default'}
+        'max_tokens': 2000, 'thinking': {'type': 'disabled'}, 'service_tier': service_tier}
     req = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(),
-                               headers={'Authorization': 'Bearer ' + os.environ['ARK_API_KEY'], 'Content-Type': 'application/json'})
+                               headers={'Authorization': 'Bearer ' + os.environ['ARK_API_KEY'], 'Content-Type': 'application/json',
+                                        'X-Ark-Max-Wait-Timeout-Ms': str(max(1000, min(1200000, int((timeout-10)*1000))))})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as response:
             body = json.load(response)
@@ -71,7 +73,9 @@ def request_response(video, model, timeout=120):
                 'request_id': exc.headers.get('x-request-id')}
 
 
-def run(testset, output, catalog_path, resume=False):
+def run(testset, output, catalog_path, resume=False, service_tier='flex'):
+    if service_tier not in ('flex', 'default'):
+        raise ValueError('Unsupported service tier')
     load_local_config()
     if not os.environ.get('ARK_API_KEY'):
         raise ValueError('ARK_API_KEY missing')
@@ -84,12 +88,14 @@ def run(testset, output, catalog_path, resume=False):
     selected = [next(r for r in rows if needle in r['source_relative_path']) for needle in needles]
     models = [m for m in json.loads(catalog_path.read_text())['models'] if m['role'] != 'historical_reference_optional']
     report = {'status': 'running', 'planned_requests': 25, 'prompt_version': PROMPT_VERSION,
-              'compression_profile': PROFILE, 'fps': 1, 'thinking': 'disabled', 'service_tier': 'default',
+              'compression_profile': PROFILE, 'fps': 1, 'thinking': 'disabled', 'service_tier': service_tier,
               'sample_selection': 'fixed coverage pilot, not representative of all 100 clips',
               'samples': selected, 'models': models, 'attempts': [], 'known_list_price_cny': '0',
               'billing_note': 'Usage × dated public rates; not an account invoice. Failed/time-out charges may be unknown.'}
     if resume:
         report = json.loads((output / 'report.json').read_text())
+        if report.get('service_tier', 'default') != service_tier:
+            raise ValueError('Cannot change service tier while resuming a run')
         if report['samples'] != selected or report['models'] != models:
             raise ValueError('Resume configuration differs from the recorded run')
         if any(a['status'] == 'sent' or a['status'] == 'transport_error_cost_unknown' for a in report['attempts']):
@@ -131,12 +137,12 @@ def run(testset, output, catalog_path, resume=False):
                         break
                     attempt = {'sample': sample_no, 'model': model['name'], 'requested_model': model['model_id'],
                                'duration_seconds': duration, 'proxy_bytes': proxy.stat().st_size, 'proxy_sha256': proxy_sha,
-                               'status': 'sent', 'started_unix': time.time()}
+                               'status': 'sent', 'requested_service_tier': service_tier, 'started_unix': time.time()}
                     report['attempts'].append(attempt)
                     save()  # Persist intent before network call, including crash/interrupt ambiguity.
                     started = time.monotonic()
                     try:
-                        response = request_response(proxy, model['model_id'])
+                        response = request_response(proxy, model['model_id'], service_tier=service_tier)
                         attempt['elapsed_seconds'] = round(time.monotonic() - started, 3)
                         attempt.update({k: v for k, v in response.items() if k != 'body'})
                         body = response.get('body')
@@ -144,7 +150,10 @@ def run(testset, output, catalog_path, resume=False):
                             (output / f'sample-{sample_no}-model-{model_no+1}.json').write_text(json.dumps(body, ensure_ascii=False, indent=2))
                             usage = body.get('usage')
                             attempt.update(usage=usage, returned_model=body.get('model'), response_id=body.get('id'),
-                                           service_tier=body.get('service_tier', 'default'))
+                                           service_tier=body.get('service_tier', service_tier))
+                            if attempt['service_tier'] != service_tier:
+                                stop = True
+                                report['stop_reason'] = 'Returned service tier differs from requested tier; stopping'
                             cost = price_usage(usage, model, attempt['service_tier'])
                             attempt['list_price_cny'] = cost
                             if cost is not None:
@@ -195,7 +204,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--testset', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--service-tier', choices=['flex','default'], default='flex')
     parser.add_argument('--resume', action='store_true', help='Resume known completed attempts without repeating requests')
     parser.add_argument('--catalog', type=Path, default=Path('docs/evaluation/model-catalog-2026-10-19.json'))
     args = parser.parse_args()
-    run(args.testset, args.output, args.catalog, args.resume)
+    run(args.testset, args.output, args.catalog, args.resume, args.service_tier)

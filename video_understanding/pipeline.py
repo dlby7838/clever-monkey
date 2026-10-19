@@ -82,7 +82,7 @@ def mock_result(duration):
              'uncertainties': ['mock 模式没有调用视觉模型'] }
 
 
-def ark_result(video, model, fps, timeout):
+def ark_result(video, model, fps, timeout, service_tier='flex'):
     key = os.environ.get('ARK_API_KEY')
     if not key or not model:
         raise AnalysisError('Ark requires ARK_API_KEY and --model (or ARK_MODEL)')
@@ -95,12 +95,15 @@ def ark_result(video, model, fps, timeout):
     payload = {'model': model, 'messages': [{'role': 'user', 'content': [
         {'type': 'video_url', 'video_url': {'url': f'data:{mime};base64,' + base64.b64encode(raw).decode(), 'fps': fps}},
         {'type': 'text', 'text': PROMPT}]}], 'response_format': {'type': 'json_object'},
-        'max_tokens': 2000}
+        'max_tokens': 2000, 'thinking': {'type': 'disabled'}, 'service_tier': service_tier}
     request = urllib.request.Request('https://ark.cn-beijing.volces.com/api/v3/chat/completions',
-        data=json.dumps(payload).encode(), headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json'})
+        data=json.dumps(payload).encode(), headers={'Authorization': f'Bearer {key}', 'Content-Type': 'application/json',
+                 'X-Ark-Max-Wait-Timeout-Ms': str(max(1000, min(1200000, int((timeout-10)*1000))))})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             body = json.load(response)
+        if body.get('service_tier', service_tier) != service_tier:
+            raise AnalysisError('Returned service tier differs from requested tier; no automatic fallback')
         choice = body['choices'][0]
         if choice.get('finish_reason') != 'stop':
             raise AnalysisError('Incomplete model response')
@@ -112,14 +115,16 @@ def ark_result(video, model, fps, timeout):
         raise AnalysisError(f'Ark response failed ({type(exc).__name__}); no automatic retry') from None
 
 
-def analyze(video: Path, database: Path, provider='mock', model='', fps=1.0, timeout=60,
+def analyze(video: Path, database: Path, provider='mock', model='', fps=1.0, timeout=600,
             ffprobe='ffprobe', max_duration=30, ffmpeg='ffmpeg',
-            compression_timeout=180, temp_dir: Path | None = None):
+            compression_timeout=180, temp_dir: Path | None = None, service_tier='flex'):
     video = video.resolve()
     database = local_output(database, (video,), database=True)
     temp_dir = local_output(temp_dir or Path(tempfile.gettempdir()), (video,))
     if video == database:
         raise AnalysisError('Output database cannot overwrite the input video')
+    if service_tier not in ('flex', 'default'):
+        raise AnalysisError('Unsupported service tier')
     if provider not in ('mock', 'ark'):
         raise AnalysisError('Unknown provider')
     if not math.isfinite(fps) or fps <= 0 or not math.isfinite(timeout) or timeout <= 0:
@@ -147,7 +152,7 @@ def analyze(video: Path, database: Path, provider='mock', model='', fps=1.0, tim
     if signature(video) != before:
         raise AnalysisError('Sample changed during preparation')
     effective_model = model if provider == 'ark' else 'mock-v1'
-    cache_key = hashlib.sha256(json.dumps([sha, provider, effective_model, fps, PROMPT_VERSION, PROFILE]).encode()).hexdigest()
+    cache_key = hashlib.sha256(json.dumps([sha, provider, effective_model, fps, PROMPT_VERSION, PROFILE, service_tier, 'thinking-disabled-v1']).encode()).hexdigest()
     database.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(database)
     try:
@@ -167,7 +172,7 @@ def analyze(video: Path, database: Path, provider='mock', model='', fps=1.0, tim
                 compression = {'profile': PROFILE, 'original_bytes': before[0],
                                'proxy_bytes': proxy.stat().st_size,
                                'width': proxy_metadata.get('width'), 'height': proxy_metadata.get('height')}
-                result, usage = (mock_result(duration), {}) if provider == 'mock' else ark_result(proxy, model, fps, timeout)
+                result, usage = (mock_result(duration), {}) if provider == 'mock' else ark_result(proxy, model, fps, timeout, service_tier=service_tier)
                 validate(result, duration)
         except (subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
             raise AnalysisError(f'Video preprocessing failed ({type(exc).__name__})') from None

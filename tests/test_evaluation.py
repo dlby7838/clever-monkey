@@ -8,6 +8,8 @@ class PriceUsageTests(unittest.TestCase):
         model = {'model_id':'doubao-seed-2-0-mini-260428','input_price':.2,'output_price':2}
         self.assertEqual(price_usage({'prompt_tokens':4000,'completion_tokens':600}, model), '0.002')
         self.assertEqual(price_usage({'prompt_tokens':4000,'completion_tokens':600,'prompt_tokens_details':{'cached_tokens':1000}}, model), '0.00184')
+        self.assertEqual(price_usage({'prompt_tokens':4000,'completion_tokens':600}, model, 'flex'), '0.001')
+        self.assertEqual(price_usage({'prompt_tokens':4000,'completion_tokens':600,'prompt_tokens_details':{'cached_tokens':1000}}, model, 'flex'), '0.00094')
         self.assertIsNone(price_usage({}, model))
         self.assertIsNone(price_usage({'prompt_tokens':4000,'completion_tokens':600}, model, 'fast'))
 
@@ -65,7 +67,7 @@ class ResumeTests(unittest.TestCase):
                     patch('video_understanding.evaluation.probe', return_value={'duration': '8'}), \
                     patch('video_understanding.evaluation.request_response', return_value={'http_status': 200, 'body': body}) as request, \
                     patch('builtins.print'):
-                run(source, output, catalog, resume=True)
+                run(source, output, catalog, resume=True, service_tier='default')
             self.assertEqual(request.call_count, 1)
             completed = json.loads((output / 'report.json').read_text())
             self.assertEqual(len(completed['attempts']), 5)

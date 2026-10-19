@@ -89,6 +89,8 @@ class UnderstandingTests(unittest.TestCase):
             result, usage = ark_result(self.video, 'test-model', 2, 60)
         payload = json.loads(request.call_args.args[0].data)
         self.assertEqual(payload['messages'][0]['content'][0]['video_url']['fps'], 2)
+        self.assertEqual(payload['service_tier'], 'flex')
+        self.assertEqual(payload['thinking']['type'], 'disabled')
         self.assertEqual(usage['total_tokens'], 12)
         validate(result, 8)
 

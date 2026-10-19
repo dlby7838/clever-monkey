@@ -22,7 +22,9 @@ def main():
     parser.add_argument('--provider', choices=['mock', 'ark'], default='mock')
     parser.add_argument('--model', default=os.environ.get('ARK_MODEL', ''))
     parser.add_argument('--fps', type=float, default=1.0)
-    parser.add_argument('--timeout', type=float, default=60)
+    parser.add_argument('--timeout', type=float, default=600)
+    parser.add_argument('--service-tier', choices=['flex', 'default'], default='flex',
+                        help='Low-priority by default; no automatic standard-price fallback')
     parser.add_argument('--max-duration', type=float, default=30)
     parser.add_argument('--ffprobe', default='ffprobe')
     parser.add_argument('--ffmpeg', default='ffmpeg')
