@@ -13,7 +13,8 @@ import urllib.request
 from nas_scanner.safety import local_output
 from nas_scanner.scanner import probe
 from .config import load_local_config
-from .pipeline import PROMPT, PROMPT_VERSION, validate, visual_duration
+from .pipeline import PROMPT, PROMPT_VERSION, validate, visual_duration, build_prompt
+from .assessment import assess_text
 from .preprocess import PROFILE, compressed_video
 
 ENDPOINT = 'https://ark.cn-beijing.volces.com/api/v3/chat/completions'
@@ -46,13 +47,13 @@ def price_usage(usage, model, tier='default'):
     return str(cost)
 
 
-def request_response(video, model, timeout=600, service_tier='flex'):
+def request_response(video, model, timeout=600, service_tier='flex', duration=None):
     raw = video.read_bytes()
     if len(raw) > 40 * 1024 * 1024:
         raise ValueError('Proxy exceeds 40 MiB')
     payload = {'model': model, 'messages': [{'role': 'user', 'content': [
         {'type': 'video_url', 'video_url': {'url': 'data:video/mp4;base64,' + base64.b64encode(raw).decode(), 'fps': 1}},
-        {'type': 'text', 'text': PROMPT}]}], 'response_format': {'type': 'json_object'},
+        {'type': 'text', 'text': build_prompt(duration)}]}], 'response_format': {'type': 'json_object'},
         'max_tokens': 2000, 'thinking': {'type': 'disabled'}, 'service_tier': service_tier}
     req = urllib.request.Request(ENDPOINT, data=json.dumps(payload).encode(),
                                headers={'Authorization': 'Bearer ' + os.environ['ARK_API_KEY'], 'Content-Type': 'application/json',
@@ -94,6 +95,8 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex'):
               'billing_note': 'Usage × dated public rates; not an account invoice. Failed/time-out charges may be unknown.'}
     if resume:
         report = json.loads((output / 'report.json').read_text())
+        if report.get('prompt_version') not in (None, PROMPT_VERSION):
+            raise ValueError('Cannot change prompt version while resuming')
         if report.get('service_tier', 'default') != service_tier:
             raise ValueError('Cannot change service tier while resuming a run')
         if report['samples'] != selected or report['models'] != models:
@@ -142,7 +145,7 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex'):
                     save()  # Persist intent before network call, including crash/interrupt ambiguity.
                     started = time.monotonic()
                     try:
-                        response = request_response(proxy, model['model_id'], service_tier=service_tier)
+                        response = request_response(proxy, model['model_id'], service_tier=service_tier, duration=duration)
                         attempt['elapsed_seconds'] = round(time.monotonic() - started, 3)
                         attempt.update({k: v for k, v in response.items() if k != 'body'})
                         body = response.get('body')
@@ -166,8 +169,9 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex'):
                                 attempt['finish_reason'] = choice.get('finish_reason')
                                 if choice.get('finish_reason') != 'stop':
                                     raise ValueError('Response truncated or not complete')
-                                validate(json.loads(choice['message']['content']), duration)
-                                attempt['status'] = 'schema_valid'
+                                assessment = assess_text(choice['message']['content'], duration)
+                                attempt['assessment'] = assessment
+                                attempt['status'] = 'machine_usable' if assessment.get('machine_usable') else 'requires_review'
                             except (ValueError, KeyError, IndexError, TypeError, RuntimeError) as exc:
                                 attempt['status'] = 'schema_invalid'
                                 attempt['validation_error_type'] = type(exc).__name__
