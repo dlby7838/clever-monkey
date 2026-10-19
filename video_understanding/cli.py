@@ -6,10 +6,16 @@ import sqlite3
 import sys
 from nas_scanner.safety import StorageSafetyError
 from nas_scanner.scanner import ScanError
+from .config import load_local_config
 from .pipeline import AnalysisError, analyze
 
 
 def main():
+    try:
+        load_local_config()
+    except (ValueError, OSError, StorageSafetyError):
+        print('Unable to load local .env; check format, local path and owner-only permissions', file=sys.stderr)
+        return 2
     parser = argparse.ArgumentParser(description='P1 local sample video understanding; mock by default')
     parser.add_argument('--video', type=Path, required=True, help='Stable local sample, not a NAS path')
     parser.add_argument('--database', type=Path, default=Path('data/p1.sqlite3'))
