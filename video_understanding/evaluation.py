@@ -88,7 +88,7 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex'):
     needles = ('袋中展示/', 'R搅拌酸奶/', 'R包装配料营养成分gi/', 'A模特拿产品展示/', '沉浸式倒牛奶/')
     selected = [next(r for r in rows if needle in r['source_relative_path']) for needle in needles]
     models = [m for m in json.loads(catalog_path.read_text())['models'] if m['role'] != 'historical_reference_optional']
-    report = {'status': 'running', 'planned_requests': 25, 'prompt_version': PROMPT_VERSION,
+    report = {'status': 'running', 'planned_requests': len(selected) * len(models), 'prompt_version': PROMPT_VERSION,
               'compression_profile': PROFILE, 'fps': 1, 'thinking': 'disabled', 'service_tier': service_tier,
               'sample_selection': 'fixed coverage pilot, not representative of all 100 clips',
               'samples': selected, 'models': models, 'attempts': [], 'known_list_price_cny': '0',

@@ -16,3 +16,7 @@
 - https://docs.volcengine.com/docs/ark/model-pricing
 
 2026-10-19原始5条常规试测的明细：本地data/evaluations/oatmeal-pilot5-20261019/MODEL_OUTPUTS.md。历史报告保留原始default设置与计费结果，不追溯改写为flex或折扣成本。
+
+## 本轮已获准的例外
+
+2026-10-19用户明确允许：仅本轮Mini2.0、Pro2.1各用常规档补跑同样5条，以完成v2三模型对比；补跑使用显式 `--service-tier default`。这不改变后续默认flex、不自动回退的政策。Lite的v2低优结果直接复用，不重复付费。
