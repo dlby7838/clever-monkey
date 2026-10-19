@@ -1,0 +1,50 @@
+{
+  "scenario_only": true,
+  "input_tokens": 4000,
+  "output_tokens": 600,
+  "non_deduplicated_file_count": 68011,
+  "rows": [
+    {
+      "model": "Seed 2.0 Mini",
+      "per_video_cny": "0.002",
+      "per_1000_videos_cny": "2.000",
+      "per_68011_files_cny": "136.022"
+    },
+    {
+      "model": "Seed 2.0 Lite",
+      "per_video_cny": "0.00456",
+      "per_1000_videos_cny": "4.56000",
+      "per_68011_files_cny": "310.13016"
+    },
+    {
+      "model": "Seed 2.0 Pro",
+      "per_video_cny": "0.0224",
+      "per_1000_videos_cny": "22.4000",
+      "per_68011_files_cny": "1523.4464"
+    },
+    {
+      "model": "Seed 2.1 Lite",
+      "per_video_cny": "0.00482",
+      "per_1000_videos_cny": "4.82000",
+      "per_68011_files_cny": "327.81302"
+    },
+    {
+      "model": "Seed 2.1 Turbo",
+      "per_video_cny": "0.021",
+      "per_1000_videos_cny": "21.000",
+      "per_68011_files_cny": "1428.231"
+    },
+    {
+      "model": "Seed 2.1 Pro",
+      "per_video_cny": "0.042",
+      "per_1000_videos_cny": "42.000",
+      "per_68011_files_cny": "2856.462"
+    }
+  ],
+  "caveats": [
+    "Not measured costs",
+    "Assumes equal tokens only for unit-price comparison",
+    "Excludes cache, reasoning beyond assumed output, failures, retries, preprocessing, storage and labor",
+    "Actual content duration and eligibility distribution unknown"
+  ]
+}

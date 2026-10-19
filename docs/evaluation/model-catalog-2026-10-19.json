@@ -1,0 +1,23 @@
+{
+  "checked_date": "2026-10-19",
+  "currency": "CNY",
+  "unit": "per_million_tokens",
+  "scope": "Ark online standard, non-audio, uncached; 2.0 input <=32K; listed 2.1 prices apply within their documented input ranges",
+  "pricing_source": "https://docs.volcengine.com/docs/ark/model-pricing",
+  "models_source": "https://docs.volcengine.com/docs/ark/model-list",
+  "account_access_verified": false,
+  "models": [
+    {"name": "Seed 2.0 Mini", "model_id": "doubao-seed-2-0-mini-260428", "input_price": 0.2, "output_price": 2.0, "role": "cost_baseline"},
+    {"name": "Seed 2.0 Lite", "model_id": "doubao-seed-2-0-lite-260428", "input_price": 0.6, "output_price": 3.6, "role": "previous_generation_balanced"},
+    {"name": "Seed 2.0 Pro", "model_id": "doubao-seed-2-0-pro-260215", "input_price": 3.2, "output_price": 16.0, "role": "historical_reference_optional", "note": "Ark model list marks this version as approaching retirement; no new production dependency"},
+    {"name": "Seed 2.1 Lite", "model_id": "doubao-seed-2-1-lite-260915", "input_price": 0.8, "output_price": 2.7, "role": "provisional_default"},
+    {"name": "Seed 2.1 Turbo", "model_id": "doubao-seed-2-1-turbo-260628", "input_price": 3.0, "output_price": 15.0, "role": "latency_quality_candidate"},
+    {"name": "Seed 2.1 Pro", "model_id": "doubao-seed-2-1-pro-260915", "input_price": 6.0, "output_price": 30.0, "role": "quality_reference_not_ground_truth"}
+  ],
+  "unconfirmed_variants": ["Seed 2.0 Turbo", "Seed 2.1 Mini"],
+  "notes": [
+    "No paid requests executed for this comparison; model availability must be checked against this account.",
+    "Agent/Coding Plan retirement notices and other Volcengine product prices do not determine standard Ark API availability or pricing.",
+    "Illustrative fixed-token comparisons are not measured costs and do not imply equal tokenization across models."
+  ]
+}
