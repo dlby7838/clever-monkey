@@ -66,3 +66,21 @@ def readonly_source(root, allow_local=False):
         return
     if not (os.statvfs(root).f_flag & os.ST_RDONLY):
         raise StorageSafetyError('NAS must be mounted read-only; refusing a writable source mount')
+
+
+TARGET_DIRECTORY = '抖音自播'
+
+
+def validate_scan_scope(root):
+    """Network scans may only start inside the configured share-relative video tree."""
+    root = Path(root).resolve()
+    if filesystem_type(root) in LOCAL_TYPES:
+        return  # Local fixtures and copied samples are not NAS inventory roots.
+    mount = next((p for p in (root, *root.parents) if os.path.ismount(p)), None)
+    if mount is None or mount == Path('/'):
+        raise StorageSafetyError('Cannot identify NAS mount boundary')
+    target = mount / TARGET_DIRECTORY
+    # Reject a target symlink even when its destination happens to be on this share.
+    if target.is_symlink() or not root.is_relative_to(target):
+        raise StorageSafetyError('NAS scan scope must be inside 抖音自播; share root and other directories are forbidden')
+    return target

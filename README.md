@@ -28,13 +28,13 @@ macOS 示例：
 
 ```bash
 python -m nas_scanner.cli \
-  --root '/Volumes/素材库' \
+  --root '/Users/lijunkun/.local/share/ai-video-platform/nas-readonly/抖音自播' \
   --database './data/inventory.sqlite3' \
   --stable-seconds 30 \
   --marker '已有的共享标识文件.txt'
 ```
 
-Linux 将 root 换成 `/mnt/nas_materials`。没有合适标识文件时省略 `--marker`；默认仍检查路径位于非系统根目录的已挂载卷。
+Linux 将 root 换成 `/mnt/nas_materials/抖音自播`。没有合适标识文件时省略 `--marker`；默认仍检查路径位于非系统根目录的已挂载卷。
 
 本地测试目录必须显式加入 `--allow-local`。生产环境不要使用此选项。它只对已识别的本地文件系统允许测试；SMB/NFS 可写挂载仍会拒绝，其他检查仍生效。
 
@@ -84,7 +84,7 @@ SMB 只读权限应由 NAS 账户和系统挂载共同保证，程序的读取�
 
 ```bash
 python3 -m nas_scanner.cli \
-  --root '/Volumes/素材库' \
+  --root '/Users/lijunkun/.local/share/ai-video-platform/nas-readonly/抖音自播' \
   --database './data/inventory.sqlite3' \
   --stable-seconds 120 \
   --read-mib-per-second 2 \
@@ -120,3 +120,18 @@ P1 现已默认自动生成 720p/H.264 临时分析副本，分析成功或失�
 程序没有删除、移动、重命名 NAS 原片的逻辑。数据库中的 missing/moved 只描述观察到的路径变化，不执行文件操作。删除仅发生在程序自己创建的本地临时目录。
 
 挂载需由操作系统管理员设置为只读，当前程序不会自动挂载或重挂载。不要在程序运行期间更改挂载、路径别名或输出目录。应用路径检查不是操作系统沙箱；只读挂载提供实际写入拒绝能力，当前本地测试不替代真实 NAS 验证。P1 仍需使用稳定本地样本，暂不直接串联 NAS 分析。
+
+
+## 素材库范围（固定规则）
+
+当前只将 NAS 共享下 **`抖音自播/` 及其子目录中的视频**登记为目标素材。共享根目录、`设计/`、`腾讯微盘备份/` 以及其他目录不属于检索范围；即使其中有视频也不登记。`抖音自播/` 中的图片、文档、表格等非视频文件也不登记。
+
+NAS 扫描入口必须位于挂载根目录的 `抖音自播` 下，可以选择整个目录或其中一个子目录。误把 `--root` 指向整个共享或其他目录时，在创建数据库、锁文件或扫描前直接报错。`--allow-local` 不会绕过网络目录范围检查。视频扩展名列表见扫描语义；子目录符号链接不跟随。
+
+当前 Mac 的完整目标路径：
+
+```text
+/Users/lijunkun/.local/share/ai-video-platform/nas-readonly/抖音自播
+```
+
+NAS 上的文件全部保持原样，不移动、不删除。之前小范围验收使用的 `抖音自播/ai视频/0923-Shirley复刻开头` 已在本范围内，无需重做。范围规则不主动启动全量扫描；后续检索接入时须沿用该素材范围。P1 手动分析本地视频仍是独立验证功能，不自动进入 NAS 素材库。

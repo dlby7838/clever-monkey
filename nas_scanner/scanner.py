@@ -13,7 +13,7 @@ import sqlite3
 import subprocess
 import time
 
-from .safety import local_output, readonly_source, StorageSafetyError
+from .safety import local_output, readonly_source, StorageSafetyError, validate_scan_scope
 
 EXTENSIONS = {'.mp4', '.mov', '.m4v', '.mkv', '.avi', '.mts', '.m2ts', '.webm'}
 
@@ -70,6 +70,7 @@ def probe(path: Path, executable: str, timeout: float) -> dict:
 def single_instance(function):
     @wraps(function)
     def locked(root, database, *args, **kwargs):
+        validate_scan_scope(root)
         database = local_output(database, (root,), database=True)
         options = inspect.signature(function).bind(root, database, *args, **kwargs)
         options.apply_defaults()
@@ -130,6 +131,7 @@ def scan(root: Path, database: Path, stable_seconds: float = 30,
         raise ScanError('Marker must be a relative path inside the root')
 
     def health():
+        validate_scan_scope(root)
         readonly_source(root, allow_local)
         if not root.is_dir():
             raise ScanError(f'Root unavailable: {root}')

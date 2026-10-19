@@ -9,7 +9,8 @@ from .scanner import ScanError, scan
 
 def main():
     parser = argparse.ArgumentParser(description='Read-only NAS video scanner (SQLite)')
-    parser.add_argument('--root', required=True, type=Path)
+    parser.add_argument('--root', required=True, type=Path,
+                        help='NAS: 抖音自播 directory or its subdirectory only; other NAS paths are rejected')
     parser.add_argument('--database', type=Path, default=Path('data/inventory.sqlite3'))
     parser.add_argument('--stable-seconds', type=float, default=30)
     parser.add_argument('--ffprobe', default='ffprobe')
