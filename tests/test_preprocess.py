@@ -33,6 +33,18 @@ class CompressionTests(unittest.TestCase):
             self.assertEqual(list(root.glob('ai-video-p1-*')), [])
             self.assertTrue(analyze(source, root / 'p1.db', temp_dir=root)['cached'])
 
+    def test_decoder_threads_preserve_proxy_bytes(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            source = root / 'source.mp4'
+            subprocess.run(['ffmpeg', '-v', 'error', '-f', 'lavfi', '-i',
+                            'testsrc2=s=320x240:d=0.4', '-c:v', 'mpeg4', '-y', str(source)], check=True)
+            with compressed_video(source, temp_dir=root, decode_threads=1) as proxy:
+                original = proxy.read_bytes()
+            with compressed_video(source, temp_dir=root, decode_threads=4) as proxy:
+                self.assertEqual(original, proxy.read_bytes())
+            self.assertEqual(list(root.glob('ai-video-p1-*')), [])
+
     def test_invalid_input_cleans_temporary_directory(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

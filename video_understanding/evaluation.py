@@ -74,7 +74,7 @@ def request_response(video, model, timeout=600, service_tier='flex', duration=No
                 'request_id': exc.headers.get('x-request-id')}
 
 
-def run(testset, output, catalog_path, resume=False, service_tier='flex', all_samples=False, budget_cny='2'):
+def run(testset, output, catalog_path, resume=False, service_tier='flex', all_samples=False, budget_cny='2', decode_threads=1):
     if service_tier not in ('flex', 'default'):
         raise ValueError('Unsupported service tier')
     budget = Decimal(str(budget_cny))
@@ -129,7 +129,7 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex', all_sa
             if digest.hexdigest() != sample['sha256']:
                 raise ValueError('Local source fingerprint changed')
             print(f'Preparing sample {sample_no}/{len(selected)} ({sample["metadata"]["duration"]} seconds)', flush=True)
-            with compressed_video(video, timeout=900, temp_dir=output) as proxy:
+            with compressed_video(video, timeout=900, temp_dir=output, decode_threads=decode_threads) as proxy:
                 metadata = probe(proxy, 'ffprobe', 30)
                 duration = visual_duration(metadata)
                 source_metadata = probe(video, 'ffprobe', 30)
@@ -219,5 +219,6 @@ if __name__ == '__main__':
     parser.add_argument('--catalog', type=Path, default=Path('docs/evaluation/model-catalog-2026-10-19.json'))
     parser.add_argument('--all-samples', action='store_true', help='Evaluate every local manifest entry')
     parser.add_argument('--budget-cny', default='2', help='Soft received-usage stop; one request can overshoot')
+    parser.add_argument('--decode-threads', type=int, choices=[1, 2, 4], default=1, help='Local decoder threads; encoder stays deterministic at one thread')
     args = parser.parse_args()
-    run(args.testset, args.output, args.catalog, args.resume, args.service_tier, args.all_samples, args.budget_cny)
+    run(args.testset, args.output, args.catalog, args.resume, args.service_tier, args.all_samples, args.budget_cny, args.decode_threads)

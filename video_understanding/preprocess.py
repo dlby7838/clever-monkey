@@ -9,7 +9,9 @@ PROFILE = 'h264-fit1280x720-crf24-noaudio-v1'
 
 
 @contextmanager
-def compressed_video(source, ffmpeg='ffmpeg', timeout=180, temp_dir=None):
+def compressed_video(source, ffmpeg='ffmpeg', timeout=180, temp_dir=None, decode_threads=1):
+    if decode_threads not in (1, 2, 4):
+        raise ValueError('decode_threads must be 1, 2 or 4')
     temp_dir = local_output(temp_dir or Path(tempfile.gettempdir()), (source,))
     # Orientation-aware bounding box; preserve aspect ratio and never upscale.
     scale = ("scale=w='if(gte(iw,ih),min(1280,iw),min(720,iw))':"
@@ -17,7 +19,7 @@ def compressed_video(source, ffmpeg='ffmpeg', timeout=180, temp_dir=None):
              "force_original_aspect_ratio=decrease:force_divisible_by=2,setsar=1")
     with tempfile.TemporaryDirectory(prefix='ai-video-p1-', dir=temp_dir) as folder:
         output = Path(folder) / 'analysis.mp4'
-        subprocess.run([ffmpeg, '-nostdin', '-v', 'error', '-threads', '1', '-i', str(source),
+        subprocess.run([ffmpeg, '-nostdin', '-v', 'error', '-threads', str(decode_threads), '-i', str(source),
                         '-map', '0:v:0', '-an', '-sn', '-dn', '-vf', scale,
                         '-c:v', 'libx264', '-threads', '1', '-preset', 'veryfast',
                         '-crf', '24', '-pix_fmt', 'yuv420p', '-movflags', '+faststart',
