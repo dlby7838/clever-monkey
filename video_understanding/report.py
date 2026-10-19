@@ -9,35 +9,7 @@ from nas_scanner.safety import local_output
 from .evaluation import price_usage
 
 
-def compile_reports(folders, output):
-    output = local_output(output)
-    output.mkdir(parents=True, exist_ok=True)
-    cases, models, runs = [], {}, []
-    fingerprints = {}
-    for folder in folders:
-        report = json.loads((folder / 'report.json').read_text())
-        runs.append({'folder': str(folder), 'status': report['status'], 'stop_reason': report.get('stop_reason')})
-        for attempt in report['attempts']:
-            sample = report['samples'][attempt['sample']-1]
-            model = next(m for m in report['models'] if m['model_id'] == attempt['requested_model'])
-            models[model['model_id']] = model
-            case = dict(attempt, source=sample['source_relative_path'], sha256=sample['sha256'])
-            key = (sample['sha256'], model['model_id'])
-            if any((c['sha256'], c['requested_model']) == key for c in cases):
-                raise ValueError('Duplicate source/model pair across reports')
-            if attempt.get('proxy_sha256'):
-                previous = fingerprints.setdefault(sample['sha256'], attempt['proxy_sha256'])
-                if previous != attempt['proxy_sha256']:
-                    raise ValueError('Proxy mismatch across models')
-            if attempt.get('usage'):
-                index = report['models'].index(model)+1
-                body = json.loads((folder / f'sample-{attempt["sample"]}-model-{index}.json').read_text())
-                case['raw_output'] = body['choices'][0]['message']['content']
-                try:
-                    case['parsed'] = json.loads(case['raw_output'])
-                except ValueError:
-                    case['parsed'] = None
-            cases.append(case)
+def summarize(cases, models):
     summary = []
     for model_id, model in models.items():
         attempts = [c for c in cases if c['requested_model'] == model_id]
@@ -63,7 +35,52 @@ def compile_reports(folders, output):
                         'completion_tokens':sum(c['usage']['completion_tokens'] for c in returned),
                         'mean_response_seconds':statistics.mean(c['elapsed_seconds'] for c in returned) if returned else None,
                         'content_accuracy':None})
-    result = {'runs':runs, 'summary':summary, 'same_proxy_fingerprints':True, 'cases':cases}
+    return summary
+
+
+def compile_reports(folders, output):
+    output = local_output(output)
+    output.mkdir(parents=True, exist_ok=True)
+    cases, models, runs = [], {}, []
+    fingerprints = {}
+    for folder in folders:
+        report = json.loads((folder / 'report.json').read_text())
+        runs.append({'folder': str(folder), 'status': report['status'], 'stop_reason': report.get('stop_reason')})
+        for attempt in report['attempts']:
+            sample = report['samples'][attempt['sample']-1]
+            model = next(m for m in report['models'] if m['model_id'] == attempt['requested_model'])
+            models[model['model_id']] = model
+            case = dict(attempt, source=sample['source_relative_path'], sha256=sample['sha256'])
+            key = (sample['sha256'], model['model_id'])
+            if attempt.get('proxy_sha256'):
+                previous = fingerprints.setdefault(sample['sha256'], attempt['proxy_sha256'])
+                if previous != attempt['proxy_sha256']:
+                    raise ValueError('Proxy mismatch across models')
+            if attempt.get('usage'):
+                index = report['models'].index(model)+1
+                body = json.loads((folder / f'sample-{attempt["sample"]}-model-{index}.json').read_text())
+                case['raw_output'] = body['choices'][0]['message']['content']
+                try:
+                    case['parsed'] = json.loads(case['raw_output'])
+                except ValueError:
+                    case['parsed'] = None
+            cases.append(case)
+    history = cases
+    terminal = {}
+    for case in history:
+        key = (case['sha256'], case['requested_model'])
+        previous = terminal.get(key)
+        if previous and previous.get('usage') and case.get('usage'):
+            raise ValueError('Duplicate paid source/model pair across reports')
+        if not previous or case.get('usage') or not previous.get('usage'):
+            terminal[key] = case
+    cases = list(terminal.values())
+    summary = summarize(cases, models)
+    cohorts = [{c['sha256'] for c in cases if c['requested_model'] == model and c.get('usage')} for model in models]
+    common = set.intersection(*cohorts) if cohorts else set()
+    common_summary = summarize([c for c in cases if c['sha256'] in common], models)
+    result = {'runs':runs, 'summary':summary, 'same_proxy_fingerprints':True, 'cases':cases,
+              'attempt_history':history, 'common_cohort_count':len(common), 'common_summary':common_summary}
     (output / 'comparison.json').write_text(json.dumps(result,ensure_ascii=False,indent=2))
     lines = ['# 原始模型返回内容', '', '机械检查不代表内容准确率。保留原文，不自动纠错。', '']
     briefs = ['# 每条素材三模型摘要', '']

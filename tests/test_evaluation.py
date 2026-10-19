@@ -82,3 +82,38 @@ class ResumeTests(unittest.TestCase):
             completed = json.loads((output / 'report.json').read_text())
             self.assertEqual(len(completed['attempts']), 5)
             self.assertEqual(completed['status'], 'finished')
+
+
+class AccountRecoveryTests(unittest.TestCase):
+    def test_account_overdue_stops_and_requires_explicit_recovery(self):
+        import json, hashlib, tempfile
+        from pathlib import Path
+        from contextlib import contextmanager
+        from unittest.mock import patch
+        from video_understanding.evaluation import run
+        from video_understanding.pipeline import mock_result
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder); source=root/'testset';source.mkdir()
+            video=source/'clip.mp4';video.write_bytes(b'fixture')
+            row={'source_relative_path':'clip.mp4','local_relative_path':'clip.mp4',
+                 'sha256':hashlib.sha256(b'fixture').hexdigest(),'metadata':{'duration':'8'}}
+            (source/'manifest.json').write_text(json.dumps({'files':[row]}))
+            catalog=root/'catalog.json'
+            catalog.write_text(json.dumps({'models':[{'model_id':'doubao-seed-2-0-mini-260428','name':'Mini','role':'baseline','input_price':.2,'output_price':2}]}))
+            output=root/'results'
+            @contextmanager
+            def proxy(path, **kwargs):
+                yield path
+            with patch('video_understanding.evaluation.load_local_config'), patch.dict('os.environ',{'ARK_API_KEY':'test-only'}), patch('video_understanding.evaluation.compressed_video',side_effect=proxy), patch('video_understanding.evaluation.probe',return_value={'duration':'8'}), patch('builtins.print'), patch('video_understanding.evaluation.request_response',return_value={'http_status':403,'error_code':'AccountOverdueError'}) as request:
+                run(source,output,catalog,all_samples=True)
+                self.assertEqual(request.call_count,1)
+                self.assertEqual(json.loads((output/'report.json').read_text())['status'],'stopped')
+                with self.assertRaisesRegex(ValueError,'Account recovery'):
+                    run(source,output,catalog,resume=True,all_samples=True)
+                self.assertEqual(request.call_count,1)
+                request.return_value={'http_status':200,'body':{'usage':{'prompt_tokens':1000,'completion_tokens':10},'choices':[{'finish_reason':'stop','message':{'content':json.dumps(mock_result(8))}}]}}
+                run(source,output,catalog,resume=True,all_samples=True,retry_rejected=True)
+                report=json.loads((output/'report.json').read_text())
+                self.assertEqual(len(report['attempts']),2)
+                self.assertEqual(report['attempts'][0]['error_code'],'AccountOverdueError')
+                self.assertEqual(report['status'],'finished')

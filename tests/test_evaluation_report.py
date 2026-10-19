@@ -21,5 +21,16 @@ class ReportTests(unittest.TestCase):
             self.assertEqual(result['summary'][0]['known_cost_cny'],'0.002')
             self.assertEqual(result['summary'][0]['machine_pass'],1)
             self.assertIsNone(result['summary'][0]['content_accuracy'])
+            self.assertEqual(result['common_cohort_count'],1)
+            rejected=dict(attempt,status='http_error',http_status=403,error_code='AccountOverdueError')
+            for key in ('usage','list_price_cny','assessment'):
+                rejected.pop(key)
+            report=json.loads((run/'report.json').read_text())
+            report['attempts']=[rejected,attempt]
+            (run/'report.json').write_text(json.dumps(report))
+            recovered=compile_reports([run],base/'recovered')
+            self.assertEqual(len(recovered['attempt_history']),2)
+            self.assertEqual(len(recovered['cases']),1)
+            self.assertEqual(recovered['summary'][0]['known_cost_cny'],'0.002')
             with self.assertRaisesRegex(ValueError,'Duplicate'):
                 compile_reports([run,run],base/'duplicate')

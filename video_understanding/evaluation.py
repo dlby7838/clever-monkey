@@ -74,7 +74,7 @@ def request_response(video, model, timeout=600, service_tier='flex', duration=No
                 'request_id': exc.headers.get('x-request-id')}
 
 
-def run(testset, output, catalog_path, resume=False, service_tier='flex', all_samples=False, budget_cny='2', decode_threads=1):
+def run(testset, output, catalog_path, resume=False, service_tier='flex', all_samples=False, budget_cny='2', decode_threads=1, retry_rejected=False):
     if service_tier not in ('flex', 'default'):
         raise ValueError('Unsupported service tier')
     budget = Decimal(str(budget_cny))
@@ -109,13 +109,17 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex', all_sa
             raise ValueError('Resume configuration differs from the recorded run')
         if any(a['status'] == 'sent' or a['status'] == 'transport_error_cost_unknown' for a in report['attempts']):
             raise ValueError('Ambiguous billed attempt; automatic replay forbidden')
+        if any(a.get('error_code') == 'AccountOverdueError' for a in report['attempts']) and not retry_rejected:
+            raise ValueError('Account recovery must be confirmed with --retry-rejected before resuming')
         report['status'] = 'running'
         report.pop('stop_reason', None)
     def save():
         (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     save()
-    skip = {a['requested_model'] for a in report['attempts'] if a.get('http_status') in (400,403,404)}
-    attempted = {(a['sample'], a['requested_model']) for a in report['attempts']}
+    def retryable(a):
+        return retry_rejected and a.get('error_code') == 'AccountOverdueError' and not a.get('usage') and a.get('http_status') == 403
+    skip = {a['requested_model'] for a in report['attempts'] if a.get('http_status') in (400,403,404) and not retryable(a)}
+    attempted = {(a['sample'], a['requested_model']) for a in report['attempts'] if not retryable(a)}
     stop = False
     try:
         for sample_no, sample in enumerate(selected, 1):
@@ -183,7 +187,7 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex', all_sa
                                 attempt['validation_error_type'] = type(exc).__name__
                         else:
                             attempt['status'] = 'http_error'
-                            if response['http_status'] in (401, 402):
+                            if response['http_status'] in (401, 402) or response.get('error_code') == 'AccountOverdueError':
                                 stop = True
                                 report['stop_reason'] = 'Authentication/payment failure; no further requests sent'
                             elif response['http_status'] in (400, 403, 404):
@@ -219,6 +223,7 @@ if __name__ == '__main__':
     parser.add_argument('--catalog', type=Path, default=Path('docs/evaluation/model-catalog-2026-10-19.json'))
     parser.add_argument('--all-samples', action='store_true', help='Evaluate every local manifest entry')
     parser.add_argument('--budget-cny', default='2', help='Soft received-usage stop; one request can overshoot')
+    parser.add_argument('--retry-rejected', action='store_true', help='Explicitly retry only overdue-account 403 rejections after account recovery; never retry usage or ambiguous attempts')
     parser.add_argument('--decode-threads', type=int, choices=[1, 2, 4], default=1, help='Local decoder threads; encoder stays deterministic at one thread')
     args = parser.parse_args()
-    run(args.testset, args.output, args.catalog, args.resume, args.service_tier, args.all_samples, args.budget_cny, args.decode_threads)
+    run(args.testset, args.output, args.catalog, args.resume, args.service_tier, args.all_samples, args.budget_cny, args.decode_threads, args.retry_rejected)
