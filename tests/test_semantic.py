@@ -28,12 +28,12 @@ class SemanticTests(unittest.TestCase):
             evidence=json.dumps({'case':{'raw_output':raw},'sample':{'source_relative_path':f'{i}.mov'}})
             self.db.execute('''INSERT INTO search_analyses(id,sha256,evidence_hash,model,summary,subjects,actions,
                             description,ocr,duration,review_state,evidence) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)''',
-                            (i,sha,str(i),'lite',summary,'人物',action,'背景购物车',ocr,i*3,'not_reviewed',evidence))
+                            (i,sha,str(i),'lite',summary,'人物',action,'普通背景',ocr,i*3,'not_reviewed',evidence))
         self.db.commit();self.encoder=Encoder()
 
     def test_dense_recall_without_literal_query_and_incremental_index(self):
         first=index(self.db,self.encoder);calls=self.encoder.calls
-        self.assertEqual(first['embedded'],7)
+        self.assertEqual(first['embedded'],10)
         self.assertEqual(index(self.db,self.encoder)['embedded'],0)
         self.assertEqual(self.encoder.calls,calls)
         self.assertEqual(retrieve(self.db,self.encoder,'采购',mode='semantic')[0]['id'],1)
@@ -72,3 +72,17 @@ class SemanticTests(unittest.TestCase):
         self.assertLess(pouring_prior('把麦片倒进碗里',hit(['倾倒白色浓稠乳品'])),0)
         self.assertEqual(pouring_prior('展示麦片',hit(['将混合燕麦倒入碗中'])),0)
         self.assertEqual(pouring_prior('把麦片倒进碗里',hit(['展示包装'])),0)
+
+
+    def test_description_only_match_and_hybrid_keyword_contribution(self):
+        description='无关布景。'*80+'采购货物时把购物车放在门边'
+        self.db.execute('UPDATE search_analyses SET description=? WHERE id=3',(description,))
+        self.db.commit()
+        index(self.db,self.encoder)
+        hits=retrieve(self.db,self.encoder,'采购',mode='hybrid')
+        self.assertEqual(hits[0]['id'],3)
+        self.assertEqual(hits[0]['match']['channel'],'visual_description')
+        self.assertIn('采购货物',hits[0]['match']['text'])
+        self.assertLess(hits[0]['rank'],-hits[0]['semantic_score'])
+        self.assertIn(3,[h['id'] for h in retrieve(self.db,self.encoder,'采购',mode='semantic')])
+        self.assertEqual(index(self.db,self.encoder)['embedded'],0)

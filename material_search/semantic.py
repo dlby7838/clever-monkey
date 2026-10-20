@@ -11,7 +11,7 @@ from nas_scanner.safety import local_output
 from .store import search, tokens
 
 MODEL = 'BAAI/bge-small-zh-v1.5'
-PROFILE = 'bge-zh-cls-unit-foreground-timeline-v1'
+PROFILE = 'bge-zh-cls-unit-description-timeline-v2'
 QUERY_PREFIX = '为这个句子生成表示以用于检索相关文章：'
 # Small, explicit lexical action prior supplements (never replaces) dense retrieval.
 ACTION_GROUPS = (('倒入', '倒进', '倾倒', '倾入', '倒出', '倒到', '倒回'),
@@ -74,10 +74,14 @@ def schema(db):
 
 
 def chunks(hit):
-    # Keep foreground fields ahead of potentially distracting scene descriptions.
+    # Separate descriptions into overlapping chunks so long scene details remain searchable.
     main = '\n'.join(('摘要：'+hit['summary'][:260], '主体：'+hit['subjects'][:140],
                       '动作：'+hit['actions'][:320]))
     yield {'channel': 'main', 'text': main, 'start': None, 'end': None}
+    description = hit['description']
+    for offset in range(0, len(description), 300):
+        yield {'channel': 'visual_description', 'text': '画面描述：'+description[offset:offset+350],
+               'start': None, 'end': None}
     try:
         parsed = json.loads(hit['evidence']['case']['raw_output'])
     except (ValueError, TypeError):
@@ -211,7 +215,7 @@ def retrieve(db, encoder, query, limit=20, mode='hybrid', **filters):
         # BGE cosine is not a calibrated probability. Keep the cutoff explicit and conservative.
         if cosine < 0.45:
             continue
-        text = ' '.join((hit['summary'], hit['subjects'], hit['actions']))
+        text = ' '.join((hit['summary'], hit['subjects'], hit['actions'], hit['description']))
         if filters.get('include_ocr'):
             text += ' '+hit['ocr']
         overlap = len(query_terms & set(tokens(text).split())) / max(1, len(query_terms))

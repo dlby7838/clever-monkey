@@ -34,7 +34,7 @@ function select(hit, button) {
   play.onclick = () => loadPreview();
   const body = node('div', undefined, 'detail-body'); pane.append(body);
   body.append(node('h3', filename(hit)),node('p', hit.summary || '此素材暂缺可用摘要。'));
-  if(hit.match && hit.match.channel === 'timeline') {
+  if(hit.match && ['timeline','visual_description'].includes(hit.match.channel)) {
     body.append(node('div','匹配到的内容','section-label'),node('p',hit.match.text));
   }
   const p = parsed(hit);
