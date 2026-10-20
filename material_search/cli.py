@@ -23,8 +23,15 @@ def main():
     find.add_argument('--min-duration', type=float)
     find.add_argument('--max-duration', type=float)
     find.add_argument('--include-ocr', action='store_true')
+    web = commands.add_parser('serve', help='启动本地检索与预览页面')
+    web.add_argument('--media-root', type=Path, required=True, help='允许预览的本地视频目录，不支持NAS')
+    web.add_argument('--port', type=int, default=4174)
     args = parser.parse_args()
     try:
+        if args.command == 'serve':
+            from .web import serve
+            serve(args.db, args.media_root, args.port)
+            return
         if args.command == 'import':
             manifest = json.loads(args.manifest.read_text())
             local_output(args.db, protected=[manifest['source_root'], args.manifest.parent, args.comparison, args.run], database=True)

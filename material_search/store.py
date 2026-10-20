@@ -1,6 +1,7 @@
 """Local SQLite search baseline with immutable evaluation evidence."""
 import hashlib
 import json
+import math
 import re
 import sqlite3
 from pathlib import Path
@@ -34,6 +35,11 @@ def connect(path):
       evidence_hash TEXT UNIQUE, model TEXT, summary TEXT, subjects TEXT, actions TEXT,
       description TEXT, ocr TEXT, duration REAL, review_state TEXT, evidence TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS search_attempts(evidence_hash TEXT PRIMARY KEY, evidence TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS search_feedback(id INTEGER PRIMARY KEY,
+      analysis_id INTEGER NOT NULL REFERENCES search_analyses(id), query TEXT NOT NULL,
+      verdict TEXT NOT NULL CHECK(verdict IN ('relevant','irrelevant','unsure')),
+      note TEXT NOT NULL, filters TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
     CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(terms);
     ''')
     return db
@@ -114,6 +120,11 @@ def search(db, query, limit=10, subject='', action='', review=None, min_duration
     """Literal keywords (space-separated AND); no semantic accuracy claims."""
     if not 1 <= limit <= 100:
         raise ValueError('limit must be between 1 and 100')
+    for duration in (min_duration, max_duration):
+        if duration is not None and (not math.isfinite(duration) or duration < 0):
+            raise ValueError('Duration must be finite and nonnegative')
+    if min_duration is not None and max_duration is not None and min_duration > max_duration:
+        raise ValueError('Minimum duration exceeds maximum duration')
     terms = query.casefold().split()
     conditions = ['a.id=(SELECT MAX(b.id) FROM search_analyses b WHERE b.sha256=a.sha256 AND b.model=a.model)']
     params = []
@@ -152,3 +163,19 @@ def search(db, query, limit=10, subject='', action='', review=None, min_duration
             result['scanner_files'] = [dict(r) for r in db.execute('SELECT root_id,path,status FROM files WHERE sha256=?', (row['sha256'],))]
         results.append(result)
     return results
+
+
+def save_feedback(db, analysis_id, query, verdict, note='', filters=None):
+    """Append human retrieval feedback without modifying model evidence or QC status."""
+    if verdict not in ('relevant', 'irrelevant', 'unsure'):
+        raise ValueError('Invalid feedback verdict')
+    if not isinstance(query, str) or len(query) > 1000 or not isinstance(note, str) or len(note) > 2000:
+        raise ValueError('Feedback text is too long or invalid')
+    if not isinstance(analysis_id, int) or isinstance(analysis_id, bool):
+        raise ValueError('Invalid analysis id')
+    if not db.execute('SELECT 1 FROM search_analyses WHERE id=?', (analysis_id,)).fetchone():
+        raise ValueError('Analysis not found')
+    with db:
+        cursor = db.execute('''INSERT INTO search_feedback(analysis_id,query,verdict,note,filters)
+                               VALUES(?,?,?,?,?)''', (analysis_id, query, verdict, note, dump(filters or {})))
+    return cursor.lastrowid

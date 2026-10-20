@@ -16,3 +16,6 @@ nas-scanner = "nas_scanner.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["nas_scanner*", "video_understanding*", "material_search*"]
+
+[tool.setuptools.package-data]
+material_search = ["static/*.html", "static/*.css", "static/*.js"]
