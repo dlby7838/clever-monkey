@@ -35,11 +35,6 @@ def connect(path):
       evidence_hash TEXT UNIQUE, model TEXT, summary TEXT, subjects TEXT, actions TEXT,
       description TEXT, ocr TEXT, duration REAL, review_state TEXT, evidence TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS search_attempts(evidence_hash TEXT PRIMARY KEY, evidence TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS search_feedback(id INTEGER PRIMARY KEY,
-      analysis_id INTEGER NOT NULL REFERENCES search_analyses(id), query TEXT NOT NULL,
-      verdict TEXT NOT NULL CHECK(verdict IN ('relevant','irrelevant','unsure')),
-      note TEXT NOT NULL, filters TEXT NOT NULL,
-      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
     CREATE VIRTUAL TABLE IF NOT EXISTS search_fts USING fts5(terms);
     ''')
     return db
@@ -116,7 +111,7 @@ def import_results(db, comparison, run, manifest, testset):
             'changes': db.total_changes-before}
 
 
-def search(db, query, limit=10, subject='', action='', review=None, min_duration=None, max_duration=None, include_ocr=False):
+def search(db, query, limit=10, subject='', action='', review=None, min_duration=None, max_duration=None, include_ocr=False, _all=False):
     """Literal keywords (space-separated AND); no semantic accuracy claims."""
     if not 1 <= limit <= 100:
         raise ValueError('limit must be between 1 and 100')
@@ -152,7 +147,7 @@ def search(db, query, limit=10, subject='', action='', review=None, min_duration
         if value is not None:
             conditions.append(f'a.duration{op}?'); params.append(value)
     rows = db.execute(f'SELECT a.*, {rank} AS rank FROM search_analyses a{join} WHERE '+
-                      ' AND '.join(conditions)+' ORDER BY rank,a.sha256 LIMIT ?', params+[limit]).fetchall()
+                      ' AND '.join(conditions)+' ORDER BY rank,a.sha256'+('' if _all else ' LIMIT ?'), params if _all else params+[limit]).fetchall()
     results = []
     for row in rows:
         result = dict(row)
@@ -163,19 +158,3 @@ def search(db, query, limit=10, subject='', action='', review=None, min_duration
             result['scanner_files'] = [dict(r) for r in db.execute('SELECT root_id,path,status FROM files WHERE sha256=?', (row['sha256'],))]
         results.append(result)
     return results
-
-
-def save_feedback(db, analysis_id, query, verdict, note='', filters=None):
-    """Append human retrieval feedback without modifying model evidence or QC status."""
-    if verdict not in ('relevant', 'irrelevant', 'unsure'):
-        raise ValueError('Invalid feedback verdict')
-    if not isinstance(query, str) or len(query) > 1000 or not isinstance(note, str) or len(note) > 2000:
-        raise ValueError('Feedback text is too long or invalid')
-    if not isinstance(analysis_id, int) or isinstance(analysis_id, bool):
-        raise ValueError('Invalid analysis id')
-    if not db.execute('SELECT 1 FROM search_analyses WHERE id=?', (analysis_id,)).fetchone():
-        raise ValueError('Analysis not found')
-    with db:
-        cursor = db.execute('''INSERT INTO search_feedback(analysis_id,query,verdict,note,filters)
-                               VALUES(?,?,?,?,?)''', (analysis_id, query, verdict, note, dump(filters or {})))
-    return cursor.lastrowid

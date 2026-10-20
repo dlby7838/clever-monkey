@@ -138,17 +138,18 @@ NAS 上的文件全部保持原样，不移动、不删除。之前小范围验�
 
 后续模型测试默认使用 Chat API 的 flex 低优档位进行批量处理，不调用待下线的旧批量接口；不支持时不自动回退常规价格。详见 [测试调用政策](docs/TESTING_POLICY.md)。
 
-### P2 本地素材搜索
+### P2 本地语义检索与快速预览
 
-已支持将现有Lite评测结果导入本地SQLite，按中文关键词、主体、动作、时长及待复核状态搜索；保存原文、来源SHA256、时间段、费用和校验记录，重复导入不重复登记。无需调用AI接口或访问NAS。
-
-完整命令与限制见 [P2开发与使用说明](docs/P2.md)。当前支持本地视频预览、动作时间跳转、原始结果查看和独立人工反馈；语义搜索尚待开发。
-
-启动检索页面（先按P2说明导入结果）：
+复用100条Lite结果，支持中文整句语义检索、关键词检索、主体/动作/时长筛选、动作时间跳转及原始分析查看。默认语义＋关键词；人工反馈已移除。
 
 ```bash
-python3 -m material_search.cli serve \
+uv venv .venv
+uv pip install --python .venv/bin/python -e '.[semantic]'
+.venv/bin/python -m material_search.cli index
+.venv/bin/python -m material_search.cli serve \
   --media-root data/testsets/oatmeal-100-20261019/videos
 ```
 
-浏览器打开 http://127.0.0.1:4174/ 。需要FFmpeg；预览仅读取显式指定的本地视频目录，不回退访问NAS。按需生成无音频720p副本，发送前删除临时文件；切换素材释放浏览器中的预览。反馈单独保存，可从页面导出。
+先按 [P2说明](docs/P2.md) 导入Lite结果，再建立索引。首次索引下载约90MB中文向量模型，此后本地推理，不产生模型API费用。向量存于SQLite，无需独立向量数据库。
+
+打开 http://127.0.0.1:4174/ 。需FFmpeg；预览仅访问显式指定的本地素材目录，不回退NAS。480p流式播放，Mac自动尝试硬件加速，不等待整段转码完成，不生成视频磁盘副本。软件编码备用路径及限制见P2说明。

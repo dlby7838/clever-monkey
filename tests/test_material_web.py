@@ -2,13 +2,14 @@ from contextlib import closing
 import hashlib
 import http.client
 import json
+import io
 from pathlib import Path
 import shutil
 import subprocess
 import tempfile
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 
 from material_search.store import connect
 from material_search.web import PreviewServer, preview_source
@@ -31,7 +32,8 @@ class MaterialWebTests(unittest.TestCase):
               ('a'*64, 'fingerprint', 'lite', json.dumps({'case': {'raw_output': '{"summary":"燕麦倒入碗"}'}, 'sample': {'source_relative_path':'test.mp4'}})))
             db.execute('INSERT INTO search_locations VALUES(?,?,?)', ('a'*64,'local',str(self.source)))
             db.execute('INSERT INTO search_fts(rowid,terms) VALUES(1,?)', ('燕麦 麦倒 倒入 入碗',))
-        self.server = PreviewServer(self.database, self.media, 0)
+        with patch('material_search.web.hardware_available',return_value=False):
+            self.server = PreviewServer(self.database, self.media, 0, load_semantic=False)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True); self.thread.start()
         def stop():
             self.server.shutdown(); self.server.server_close(); self.thread.join()
@@ -43,25 +45,22 @@ class MaterialWebTests(unittest.TestCase):
         response = conn.getresponse(); status = response.status; body = response.read(); conn.close()
         return status, body
 
-    def test_search_feedback_evidence_and_cross_site_protection(self):
-        status, body = self.request('GET','/api/search?q=%E7%87%95%E9%BA%A6')
+    def test_search_feedback_removed_and_cross_site_protection(self):
+        status, body = self.request('GET','/api/search?q=%E7%87%95%E9%BA%A6&mode=keyword')
         self.assertEqual(status,200); self.assertEqual(len(json.loads(body)['results']),1)
-        feedback = {'analysis_id':1,'query':'燕麦','verdict':'relevant','note':'动作符合','filters':{'max':'10'}}
-        self.assertEqual(self.request('POST','/api/feedback',feedback)[0],403)
-        headers = {'X-Preview-Token': self.server.token}
-        self.assertEqual(self.request('POST','/api/feedback',feedback,headers)[0],201)
-        feedback['verdict']='unsure'
-        self.assertEqual(self.request('POST','/api/feedback',feedback,headers)[0],201)
-        self.assertEqual(self.request('POST','/api/feedback',feedback,{**headers,'Origin':'http://evil.test'})[0],403)
+        self.assertNotIn('feedback_count',json.loads(body))
+        self.assertEqual(self.request('POST','/api/feedback',{'analysis_id':1})[0],404)
+        self.assertEqual(self.request('GET','/api/feedback')[0],404)
         self.assertEqual(self.request('GET','/api/search',headers={'Host':'evil.test'})[0],403)
-        feedback['verdict']='bad'
-        self.assertEqual(self.request('POST','/api/feedback',feedback,headers)[0],400)
-        feedback.update(verdict='relevant',analysis_id=999)
-        self.assertEqual(self.request('POST','/api/feedback',feedback,headers)[0],400)
-        self.assertEqual(len(json.loads(self.request('GET','/api/feedback')[1])),2)
+        self.assertEqual(self.request('POST','/api/feedback',{}, {'Origin':'http://evil.test'})[0],403)
+        self.assertEqual(self.request('GET','/api/search?q=test&mode=semantic')[0],400)
         with closing(connect(self.database)) as db, db:
             self.assertEqual(db.execute('SELECT evidence_hash FROM search_analyses').fetchone()[0],'fingerprint')
-            self.assertEqual(db.execute('SELECT review_state FROM search_analyses').fetchone()[0],'not_reviewed')
+            self.assertIsNone(db.execute("SELECT name FROM sqlite_master WHERE name='search_feedback'").fetchone())
+        page = self.request('GET','/')[1].decode()
+        script = self.request('GET','/app.js')[1].decode()
+        self.assertNotIn('人工反馈',page)
+        self.assertNotIn('/api/feedback',script)
 
     def test_allowlist_no_nas_fallback_and_symlink(self):
         with closing(connect(self.database)) as db, db:
@@ -81,7 +80,7 @@ class MaterialWebTests(unittest.TestCase):
         self.assertEqual(self.request('GET','/api/search?min=10&max=1')[0],400)
         self.server.preview_lock.acquire()
         try:
-            self.assertEqual(self.request('GET','/api/preview?id=1',headers={'X-Preview-Token':self.server.token})[0],409)
+            self.assertEqual(self.request('GET','/api/preview?id=1&token='+self.server.token)[0],409)
         finally:
             self.server.preview_lock.release()
         with closing(connect(self.database)) as db, db:
@@ -93,14 +92,32 @@ class MaterialWebTests(unittest.TestCase):
         subprocess.run(['ffmpeg','-nostdin','-v','error','-f','lavfi','-i','color=c=green:s=64x64:d=0.3',
                         '-c:v','libx264','-pix_fmt','yuv420p','-y',str(self.source)],check=True)
         before=hashlib.sha256(self.source.read_bytes()).hexdigest()
-        temp=self.root/'proxies';temp.mkdir()
-        from video_understanding.preprocess import compressed_video
-        def temporary(source): return compressed_video(source,temp_dir=temp)
-        with patch('material_search.web.compressed_video',side_effect=temporary):
-            status, body=self.request('GET','/api/preview?id=1',headers={'X-Preview-Token':self.server.token})
+        from material_search.preview import stream_preview, command
+        self.assertIn('pipe:1', command(self.source))
+        self.assertIn('3.0', command(self.source,3.0))
+        with self.assertRaises(ValueError): command(self.source,float('nan'))
+        with stream_preview(self.source) as (first, stream):
+            self.assertIn(b'ftyp',first[:40])
+        self.assertTrue(stream.closed)
+        status, body=self.request('GET','/api/preview?id=1&token='+self.server.token)
         self.assertEqual(status,200);self.assertIn(b'ftyp',body[:40])
-        self.assertEqual(list(temp.iterdir()),[])
         self.assertEqual(hashlib.sha256(self.source.read_bytes()).hexdigest(),before)
-        with patch('material_search.web.compressed_video',side_effect=RuntimeError('decode failed')):
-            self.assertEqual(self.request('GET','/api/preview?id=1',headers={'X-Preview-Token':self.server.token})[0],500)
+        with patch('material_search.web.stream_preview',side_effect=RuntimeError('decode failed')):
+            self.assertEqual(self.request('GET','/api/preview?id=1&token='+self.server.token)[0],500)
         self.assertFalse(self.server.preview_lock.locked())
+        self.assertEqual(self.request('GET','/api/preview?id=1&token='+self.server.token+'&start=-1')[0],400)
+
+
+    def test_hardware_failure_falls_back_and_cancel_reaps_process(self):
+        from material_search.preview import stream_preview
+        failed=MagicMock();failed.stdout=io.BytesIO(b'');failed.poll.return_value=0
+        running=MagicMock();running.stdout=io.BytesIO(b'\x00\x00\x00\x18ftypmp42');running.poll.return_value=None
+        with patch('material_search.preview.subprocess.Popen',side_effect=[failed,running]) as spawn:
+            with patch('material_search.preview.threading.Timer'):
+                with stream_preview(self.source,hardware=True) as (first,stream):
+                    self.assertIn(b'ftyp',first)
+        self.assertEqual(spawn.call_count,2)
+        self.assertIn('h264_videotoolbox',spawn.call_args_list[0].args[0])
+        self.assertIn('libx264',spawn.call_args_list[1].args[0])
+        running.terminate.assert_called_once();running.wait.assert_called_once()
+        self.assertTrue(stream.closed)
