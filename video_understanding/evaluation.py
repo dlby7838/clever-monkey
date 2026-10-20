@@ -74,7 +74,7 @@ def request_response(video, model, timeout=600, service_tier='flex', duration=No
                 'request_id': exc.headers.get('x-request-id')}
 
 
-def run(testset, output, catalog_path, resume=False, service_tier='flex', all_samples=False, budget_cny='2', decode_threads=1, retry_rejected=False):
+def run(testset, output, catalog_path, resume=False, service_tier='flex', all_samples=False, budget_cny='2', decode_threads=1, retry_rejected=False, retry_mini_transport_once=False):
     if service_tier not in ('flex', 'default'):
         raise ValueError('Unsupported service tier')
     budget = Decimal(str(budget_cny))
@@ -97,6 +97,7 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex', all_sa
               'budget_cny': str(budget),
               'samples': selected, 'models': models, 'attempts': [], 'known_list_price_cny': '0',
               'billing_note': 'Usage × dated public rates; not an account invoice. Failed/time-out charges may be unknown.'}
+    transport_retry_index = None
     if resume:
         report = json.loads((output / 'report.json').read_text())
         if report.get('prompt_version') not in (None, PROMPT_VERSION):
@@ -107,8 +108,25 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex', all_sa
             raise ValueError('Cannot change budget while resuming')
         if report['samples'] != selected or report['models'] != models:
             raise ValueError('Resume configuration differs from the recorded run')
-        if any(a['status'] == 'sent' or a['status'] == 'transport_error_cost_unknown' for a in report['attempts']):
-            raise ValueError('Ambiguous billed attempt; automatic replay forbidden')
+        ambiguous = [(i,a) for i,a in enumerate(report['attempts'])
+                     if a['status'] in ('sent','transport_error_cost_unknown') and not a.get('manual_retry_resolution')]
+        if ambiguous:
+            if not retry_mini_transport_once:
+                raise ValueError('Ambiguous billed attempt; automatic replay forbidden')
+            if (len(ambiguous) != 1 or report.get('manual_mini_transport_recovery') or
+                ambiguous[0][1]['status'] != 'transport_error_cost_unknown' or
+                ambiguous[0][1]['requested_model'] != 'doubao-seed-2-0-mini-260428'):
+                raise ValueError('Only one explicitly reviewed Mini transport failure can be recovered once')
+            # Worst noncached Mini charge: 256K input at .8 plus max2000 output at8 CNY/M.
+            mini = next(m for m in models if m['model_id'] == ambiguous[0][1]['requested_model'])
+            reserve = (Decimal(str(mini['input_price'])) * 4 * 256000 + Decimal(str(mini['output_price'])) * 4 * 2000) / 1000000
+            if Decimal(report['known_list_price_cny']) + reserve >= budget:
+                raise ValueError('Insufficient remaining budget to reserve unknown Mini charge')
+            transport_retry_index = ambiguous[0][0]
+            ambiguous[0][1]['manual_retry_resolution'] = 'one_controlled_retry_issued_original_cost_still_unknown'
+            report['unknown_cost_reserve_cny'] = str(reserve)
+            report['manual_mini_transport_recovery'] = {'attempt_index':transport_retry_index,
+                'basis':'Operator-controlled single retry within user-authorized original completion budget'}
         if any(a.get('error_code') == 'AccountOverdueError' for a in report['attempts']) and not retry_rejected:
             raise ValueError('Account recovery must be confirmed with --retry-rejected before resuming')
         report['status'] = 'running'
@@ -117,7 +135,7 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex', all_sa
         (output / 'report.json').write_text(json.dumps(report, ensure_ascii=False, indent=2))
     save()
     def retryable(a):
-        return retry_rejected and a.get('error_code') == 'AccountOverdueError' and not a.get('usage') and a.get('http_status') == 403
+        return (transport_retry_index is not None and a is report['attempts'][transport_retry_index]) or (retry_rejected and a.get('error_code') == 'AccountOverdueError' and not a.get('usage') and a.get('http_status') == 403)
     skip = {a['requested_model'] for a in report['attempts'] if a.get('http_status') in (400,403,404) and not retryable(a)}
     attempted = {(a['sample'], a['requested_model']) for a in report['attempts'] if not retryable(a)}
     stop = False
@@ -144,13 +162,17 @@ def run(testset, output, catalog_path, resume=False, service_tier='flex', all_sa
                     if model['model_id'] in skip or (sample_no, model['model_id']) in attempted:
                         continue
                     # Soft safety stop after received usage; no automatic retries on unknown-cost errors.
-                    if Decimal(report['known_list_price_cny']) >= budget:
-                        report['stop_reason'] = f'Reached CNY {budget} received-usage safety threshold'
+                    if Decimal(report['known_list_price_cny']) >= budget - Decimal(report.get('unknown_cost_reserve_cny','0')):
+                        report['stop_reason'] = f'Known usage plus reserved unknown charge reached CNY {budget} safety threshold'
                         stop = True
                         break
                     attempt = {'sample': sample_no, 'model': model['name'], 'requested_model': model['model_id'],
                                'duration_seconds': duration, 'proxy_bytes': proxy.stat().st_size, 'proxy_sha256': proxy_sha,
                                'status': 'sent', 'requested_service_tier': service_tier, 'started_unix': time.time()}
+                    if transport_retry_index is not None:
+                        original = report['attempts'][transport_retry_index]
+                        if original['sample'] == sample_no and original['requested_model'] == model['model_id']:
+                            attempt['manual_recovery_of_attempt_index'] = transport_retry_index
                     report['attempts'].append(attempt)
                     save()  # Persist intent before network call, including crash/interrupt ambiguity.
                     started = time.monotonic()
@@ -223,7 +245,8 @@ if __name__ == '__main__':
     parser.add_argument('--catalog', type=Path, default=Path('docs/evaluation/model-catalog-2026-10-19.json'))
     parser.add_argument('--all-samples', action='store_true', help='Evaluate every local manifest entry')
     parser.add_argument('--budget-cny', default='2', help='Soft received-usage stop; one request can overshoot')
+    parser.add_argument('--retry-mini-transport-once', action='store_true', help='Operator-controlled one-time Mini transport recovery; reserve worst-case unknown charge within original budget')
     parser.add_argument('--retry-rejected', action='store_true', help='Explicitly retry only overdue-account 403 rejections after account recovery; never retry usage or ambiguous attempts')
     parser.add_argument('--decode-threads', type=int, choices=[1, 2, 4], default=1, help='Local decoder threads; encoder stays deterministic at one thread')
     args = parser.parse_args()
-    run(args.testset, args.output, args.catalog, args.resume, args.service_tier, args.all_samples, args.budget_cny, args.decode_threads, args.retry_rejected)
+    run(args.testset, args.output, args.catalog, args.resume, args.service_tier, args.all_samples, args.budget_cny, args.decode_threads, args.retry_rejected, args.retry_mini_transport_once)
