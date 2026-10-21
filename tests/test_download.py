@@ -45,7 +45,7 @@ class DownloadTests(unittest.TestCase):
     def prepare(self,ids):
         return self.request('POST','/api/download/prepare',{'ids':ids},{'X-Preview-Token':self.server.token})
 
-    def test_zip_originals_unicode_paths_dedupe_and_single_use(self):
+    def test_zip_originals_flat_names_dedupe_and_single_use(self):
         status,_,body=self.prepare([1,2,1]);self.assertEqual(status,200)
         task=json.loads(body);self.assertEqual(task['files'],2)
         self.assertEqual(task['bytes'],sum(map(len,self.contents.values())))
@@ -54,8 +54,10 @@ class DownloadTests(unittest.TestCase):
         self.assertIn('attachment;',headers['Content-Disposition'])
         with zipfile.ZipFile(io.BytesIO(body)) as archive:
             self.assertIsNone(archive.testzip())
-            self.assertEqual(archive.read('中文目录甲/same.MOV'),self.contents[1])
-            self.assertEqual(archive.read('中文目录乙/same.MOV'),self.contents[2])
+            self.assertEqual(archive.namelist(),['same.MOV','same-2.MOV'])
+            self.assertTrue(all('/' not in n and '\\' not in n for n in archive.namelist()))
+            self.assertEqual(archive.read('same.MOV'),self.contents[1])
+            self.assertEqual(archive.read('same-2.MOV'),self.contents[2])
         self.assertEqual(self.request('GET',task['url'])[0],403)
         self.assertEqual((self.root/'中文目录甲/same.MOV').read_bytes(),self.contents[1])
         self.assertEqual(sorted(p.name for p in self.base.iterdir()),['db.sqlite','videos'])
@@ -123,3 +125,16 @@ class DownloadTests(unittest.TestCase):
                 stream=opened[0][1]
                 with self.assertRaises(BrokenPipeError):stream_archive(opened,broken)
             self.assertTrue(stream.closed)
+
+
+    def test_flat_unicode_names_and_case_insensitive_collisions(self):
+        with closing(connect(self.database)) as db, db:
+            for i,folder,name in ((1,'中文目录甲','燕麦.MOV'),(2,'中文目录乙','燕麦.mov')):
+                source=self.root/folder/'same.MOV';destination=source.with_name(name);source.rename(destination)
+                db.execute('UPDATE search_locations SET path=? WHERE path=?',(str(destination),str(source)))
+        task=json.loads(self.prepare([1,2])[2]);status,_,body=self.request('GET',task['url'])
+        self.assertEqual(status,200)
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            self.assertEqual(archive.namelist(),['燕麦.MOV','燕麦-2.mov'])
+            self.assertEqual(archive.read('燕麦.MOV'),self.contents[1])
+            self.assertEqual(archive.read('燕麦-2.mov'),self.contents[2])

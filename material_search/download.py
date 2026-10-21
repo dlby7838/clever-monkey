@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import unicodedata
 import zipfile
 from zoneinfo import ZoneInfo
 
@@ -28,16 +29,16 @@ def build_plan(db, ids, root, resolve):
             continue
         path = resolve(db, analysis_id, root)
         metadata = path.stat()
-        # Retain folder hierarchy, but make ZIP names safe on common desktop platforms.
-        parts = [re.sub(r'[<>:"\\|?*\x00-\x1f]', '_', p).rstrip(' .') or '_'
-                 for p in path.relative_to(root).parts]
-        name = '/'.join(parts)
-        if name in names:
-            source = Path(parts[-1]); parts[-1] = f'{source.stem}-{analysis_id}{source.suffix}'
-            name = '/'.join(parts)
-            while name in names:
-                name = '_'+name
-        names.add(name); seen.add(row['sha256'])
+        # Flatten downloads; prevent overwrites on case-insensitive desktop filesystems.
+        name = re.sub(r'[<>:"\\|?*\x00-\x1f]', '_', path.name).rstrip(' .') or '_'
+        original = Path(name)
+        key = lambda value: unicodedata.normalize('NFC', value).casefold()
+        suffix = 0
+        while key(name) in names:
+            suffix += 1
+            extra = f'-{analysis_id}' if suffix == 1 else f'-{analysis_id}-{suffix}'
+            name = f'{original.stem}{extra}{original.suffix}'
+        names.add(key(name)); seen.add(row['sha256'])
         plan.append({'id': analysis_id, 'sha256': row['sha256'], 'path': path, 'name': name,
                      'size': metadata.st_size, 'mtime_ns': metadata.st_mtime_ns})
     return plan
