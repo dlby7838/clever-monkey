@@ -153,3 +153,14 @@ uv pip install --python .venv/bin/python -e '.[semantic]'
 先按 [P2说明](docs/P2.md) 导入Lite结果，再建立索引。首次索引下载约90MB中文向量模型，此后本地推理，不产生模型API费用。向量存于SQLite，无需独立向量数据库。
 
 打开 http://127.0.0.1:4174/ 。需FFmpeg；预览仅访问显式指定的本地素材目录，不回退NAS。480p流式播放，Mac自动尝试硬件加速，不等待整段转码完成，不生成视频磁盘副本。软件编码备用路径及限制见P2说明。
+
+
+同内网设备访问（将IP换成本机实际地址）：
+
+```bash
+.venv/bin/python -m material_search.cli serve \
+  --media-root data/testsets/oatmeal-100-20261019/videos \
+  --lan-ip 192.168.112.33
+```
+
+访问 `http://192.168.112.33:4174/`，使用首次生成在 `data/lan-access.key` 的口令登录。会话8小时，重启后重新登录。此模式用于可信内网；完整访问限制见 [P2局域网说明](docs/P2.md#局域网访问)。

@@ -27,6 +27,8 @@ def main():
     find.add_argument('--include-ocr', action='store_true')
     web = commands.add_parser('serve', help='启动本地检索与预览页面')
     web.add_argument('--media-root', type=Path, required=True, help='允许预览的本地视频目录，不支持NAS')
+    web.add_argument('--lan-ip', help='允许访问的本机私有IPv4地址；启用局域网口令登录')
+    web.add_argument('--password-file', type=Path, default=Path('data/lan-access.key'))
     web.add_argument('--port', type=int, default=4174)
     web.add_argument('--model-cache', type=Path, default=Path('data/models'))
     build = commands.add_parser('index', help='准备本地中文模型并增量建立向量索引')
@@ -35,7 +37,7 @@ def main():
     try:
         if args.command == 'serve':
             from .web import serve
-            serve(args.db, args.media_root, args.port, args.model_cache)
+            serve(args.db, args.media_root, args.port, args.model_cache, args.lan_ip, args.password_file)
             return
         if args.command == 'import':
             manifest = json.loads(args.manifest.read_text())

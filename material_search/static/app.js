@@ -4,7 +4,7 @@ const form = $('search-form');
 function node(tag, text, cls) { const e = document.createElement(tag); if(text !== undefined) e.textContent = text; if(cls) e.className = cls; return e; }
 async function api(url, options = {}) {
   const response = await fetch(url, {...options, headers: {'X-Preview-Token': token || '', ...options.headers}});
-  if(!response.ok) { const data = await response.json(); throw new Error(data.error || '请求失败'); }
+  if(!response.ok) { const data = await response.json(); const error=new Error(data.error || '请求失败');error.status=response.status;if(response.status===401) showLogin();throw error; }
   return response;
 }
 function clearPreview() {
@@ -82,4 +82,25 @@ async function runSearch(event) {
 }
 form.addEventListener('submit',runSearch);
 window.addEventListener('pagehide',clearPreview);
-api('/api/session').then(r=>r.json()).then(data=>{token=data.token;if(!data.semantic_ready) $('status').textContent=data.semantic_error || '语义模型尚未准备好';return runSearch();}).catch(e=>$('status').textContent=e.message);
+function showLogin() {
+  clearPreview(); token=null; $('results').replaceChildren(); $('detail').replaceChildren();
+  $('workspace').hidden=true; $('login').hidden=false;
+}
+async function initialize() {
+  try {
+    const data=await(await api('/api/session')).json(); token=data.token;
+    $('login').hidden=true; $('workspace').hidden=false;
+    await runSearch();
+  } catch(error) {
+    showLogin(); $('login-status').textContent=error.status===401 ? '' : error.message;
+  }
+}
+$('login-form').addEventListener('submit',async(event)=>{
+  event.preventDefault(); const button=event.target.querySelector('button'); button.disabled=true;
+  try {
+    await api('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:$('password').value})});
+    $('password').value=''; $('login-status').textContent=''; await initialize();
+  } catch(error) {$('login-status').textContent=error.message;}
+  finally {button.disabled=false;}
+});
+initialize();

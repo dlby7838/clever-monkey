@@ -1,14 +1,16 @@
-"""Loopback-only preview UI. Only explicitly allowed LOCAL videos may be read."""
+"""Local/private-LAN preview UI. Only explicitly allowed LOCAL videos may be read."""
 import json
 import math
 import secrets
 import sqlite3
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from nas_scanner.safety import local_output
+from .access import private_ipv4, password_file, session_cookie, valid_session
 from .preview import hardware_available, stream_preview
 from .semantic import LocalEncoder, SemanticUnavailable, retrieve
 from .store import connect
@@ -35,7 +37,15 @@ def preview_source(db, analysis_id, root):
 class PreviewServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, database, media_root, port=4174, encoder=None, model_cache='data/models', load_semantic=True):
+    def __init__(self, database, media_root, port=4174, encoder=None, model_cache='data/models', load_semantic=True, lan_ip=None, password=None):
+        if lan_ip is not None and not private_ipv4(lan_ip):
+            raise ValueError('局域网地址须为私有IPv4地址')
+        if lan_ip and (not isinstance(password, str) or not 12 <= len(password) <= 256):
+            raise ValueError('局域网模式必须设置12到256字符访问口令')
+        self.lan_ip = lan_ip
+        self.password = password
+        self.login_failures = {}
+        self.login_lock = threading.Lock()
         self.media_root = local_output(Path(media_root).absolute())
         if not self.media_root.is_dir():
             raise ValueError('Local media root does not exist')
@@ -54,40 +64,50 @@ class PreviewServer(ThreadingHTTPServer):
                 self.encoder = LocalEncoder(model_cache)
             except SemanticUnavailable as error:
                 self.semantic_error = str(error)
-        super().__init__(('127.0.0.1', port), Handler)
+        super().__init__(('0.0.0.0' if lan_ip else '127.0.0.1', port), Handler)
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *_):
         pass
 
-    def reply(self, status, value, content_type='application/json; charset=utf-8'):
+    def reply(self, status, value, content_type='application/json; charset=utf-8', cookie=None):
         data = value if isinstance(value, bytes) else json.dumps(value, ensure_ascii=False).encode()
         self.send_response(status)
         self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(data)))
+        if cookie:
+            self.send_header('Set-Cookie', cookie)
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Content-Security-Policy', "default-src 'self'; media-src 'self' blob:; object-src 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(data)
 
-    def allowed(self, token=False):
-        expected = f'127.0.0.1:{self.server.server_port}'
-        if self.headers.get('Host') != expected or self.headers.get('Sec-Fetch-Site') == 'cross-site':
+    def allowed(self):
+        if not private_ipv4(self.client_address[0], loopback=True):
             return False
-        if self.headers.get('Origin') not in (None, f'http://{expected}'):
+        hosts = {f'127.0.0.1:{self.server.server_port}'}
+        if self.server.lan_ip:
+            hosts.add(f'{self.server.lan_ip}:{self.server.server_port}')
+        host = self.headers.get('Host')
+        if host not in hosts or self.headers.get('Sec-Fetch-Site') == 'cross-site':
             return False
-        return not token or secrets.compare_digest(self.headers.get('X-Preview-Token', ''), self.server.token)
+        return self.headers.get('Origin') in (None, f'http://{host}')
+
+    def authenticated(self):
+        return not self.server.lan_ip or valid_session(self.headers.get('Cookie'), self.server.token)
 
     def do_GET(self):
         if not self.allowed():
-            self.reply(403, {'error': '仅允许本机同源访问'}); return
+            self.reply(403, {'error': '访问地址或来源不被允许'}); return
         parsed = urlsplit(self.path)
         if parsed.path in ('/', '/app.js', '/style.css'):
             name = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css'}[parsed.path]
             content_type = {'index.html': 'text/html; charset=utf-8', 'app.js': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8'}[name]
             self.reply(200, (STATIC/name).read_bytes(), content_type); return
+        if not self.authenticated():
+            self.reply(401, {'error': '请输入访问口令'}); return
         if parsed.path == '/api/session':
             self.reply(200, {'token': self.server.token, 'semantic_ready': self.server.encoder is not None,
                              'semantic_error': self.server.semantic_error}); return
@@ -142,12 +162,43 @@ class Handler(BaseHTTPRequestHandler):
             db.close()
 
     def do_POST(self):
-        self.reply(404 if self.allowed() else 403, {'error': '接口不存在'})
+        if not self.allowed():
+            self.reply(403, {'error': '访问来源不被允许'}); return
+        if self.path != '/api/login' or not self.server.lan_ip:
+            self.reply(404, {'error': '接口不存在'}); return
+        peer = self.client_address[0]
+        with self.server.login_lock:
+            now = time.monotonic()
+            self.server.login_failures = {ip: [t for t in times if now-t < 60]
+                                          for ip, times in self.server.login_failures.items()
+                                          if times and now-times[-1] < 60}
+            failures = self.server.login_failures.get(peer, [])
+            if len(failures) >= 5 or (peer not in self.server.login_failures and len(self.server.login_failures) >= 128):
+                self.reply(429, {'error': '尝试次数过多，请一分钟后重试'}); return
+            # Reserve the attempt before releasing the lock; parallel failures cannot bypass limits.
+            self.server.login_failures[peer] = failures + [now]
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= 2048:
+                raise ValueError('请求大小无效')
+            self.connection.settimeout(10)
+            data = json.loads(self.rfile.read(length))
+            password = data.get('password') if isinstance(data, dict) else None
+            if not isinstance(password, str) or not secrets.compare_digest(password.encode(), self.server.password.encode()):
+                self.reply(401, {'error': '访问口令不正确'}); return
+            with self.server.login_lock:
+                self.server.login_failures.pop(peer, None)
+            self.reply(200, {'ok': True}, cookie=session_cookie(self.server.token))
+        except (ValueError, OSError) as error:
+            self.reply(400, {'error': str(error)})
 
 
-def serve(database, media_root, port=4174, model_cache='data/models'):
-    server = PreviewServer(database, media_root, port, model_cache=model_cache)
+def serve(database, media_root, port=4174, model_cache='data/models', lan_ip=None, access_file='data/lan-access.key'):
+    password = password_file(access_file, protected=[media_root]) if lan_ip else None
+    server = PreviewServer(database, media_root, port, model_cache=model_cache, lan_ip=lan_ip, password=password)
     print(f'素材检索页面：http://127.0.0.1:{server.server_port}（Ctrl+C停止）', flush=True)
+    if lan_ip:
+        print(f'局域网地址：http://{lan_ip}:{server.server_port}；访问口令文件：{access_file}', flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
