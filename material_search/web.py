@@ -11,6 +11,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from nas_scanner.safety import local_output
 from .access import private_ipv4, password_file, session_cookie, valid_session
+from .download import build_plan, open_plan, stream_archive, archive_filename, ChunkedWriter
 from .preview import hardware_available, stream_preview
 from .semantic import LocalEncoder, SemanticUnavailable, retrieve
 from .store import connect
@@ -55,6 +56,9 @@ class PreviewServer(ThreadingHTTPServer):
         db = connect(self.database)
         db.close()
         self.token = secrets.token_urlsafe(32)
+        self.download_lock = threading.Lock()
+        self.ticket_lock = threading.Lock()
+        self.download_tickets = {}
         self.preview_lock = threading.Lock()
         self.hardware = hardware_available()
         self.encoder = encoder
@@ -126,6 +130,39 @@ class Handler(BaseHTTPRequestHandler):
                 rows = retrieve(db, self.server.encoder, val('q'), limit=20 if val('q').strip() else 100, mode=mode, **kwargs)
                 count = db.execute('SELECT count(*) FROM search_assets').fetchone()[0]
                 self.reply(200, {'results': rows, 'assets': count, 'mode': mode})
+            elif parsed.path == '/api/download':
+                key = val('ticket')
+                binding = (self.client_address[0], self.headers.get('Cookie', ''))
+                with self.server.ticket_lock:
+                    ticket = self.server.download_tickets.get(key)
+                    if not ticket or ticket['expires'] < time.monotonic() or ticket['binding'] != binding:
+                        self.reply(403, {'error': '下载链接无效或已过期，请重新选择下载'}); return
+                if not self.server.download_lock.acquire(blocking=False):
+                    self.reply(409, {'error': '正在传输其他下载，请稍后重试'}); return
+                try:
+                    with self.server.ticket_lock:
+                        ticket = self.server.download_tickets.pop(key, None)
+                    if ticket is None:
+                        self.reply(403, {'error': '下载链接已使用'}); return
+                    with open_plan(db, ticket['plan'], self.server.media_root, preview_source) as opened:
+                        self.protocol_version = 'HTTP/1.1'
+                        self.send_response(200)
+                        self.send_header('Content-Type', 'application/zip')
+                        self.send_header('Transfer-Encoding', 'chunked')
+                        self.send_header('Content-Disposition', f'attachment; filename="{archive_filename()}"')
+                        self.send_header('Cache-Control', 'no-store')
+                        self.send_header('X-Content-Type-Options', 'nosniff')
+                        self.send_header('Connection', 'close')
+                        self.end_headers(); self.close_connection = True
+                        try:
+                            output = ChunkedWriter(self.wfile)
+                            stream_archive(opened, output)
+                            output.finish()
+                        except (OSError, ValueError):
+                            # A failed stream must stay incomplete, never append a JSON error to ZIP bytes.
+                            pass
+                finally:
+                    self.server.download_lock.release()
             elif parsed.path == '/api/preview':
                 if not secrets.compare_digest(val('token'), self.server.token):
                     self.reply(403, {'error': '预览请求缺少令牌'}); return
@@ -164,6 +201,42 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed():
             self.reply(403, {'error': '访问来源不被允许'}); return
+        if self.path == '/api/download/prepare':
+            if not self.authenticated():
+                self.reply(401, {'error': '请输入访问口令'}); return
+            if not secrets.compare_digest(self.headers.get('X-Preview-Token', ''), self.server.token):
+                self.reply(403, {'error': '下载请求缺少令牌'}); return
+            if self.server.download_lock.locked():
+                self.reply(409, {'error': '正在传输其他下载，请稍后重试'}); return
+            db = None
+            try:
+                length = int(self.headers.get('Content-Length', '0'))
+                if not 0 < length <= 8192:
+                    raise ValueError('下载请求大小无效')
+                self.connection.settimeout(15)
+                payload = json.loads(self.rfile.read(length))
+                if not isinstance(payload, dict):
+                    raise ValueError('下载请求格式无效')
+                db = connect(self.server.database)
+                plan = build_plan(db, payload.get('ids'), self.server.media_root, preview_source)
+                with open_plan(db, plan, self.server.media_root, preview_source):
+                    pass
+                with self.server.ticket_lock:
+                    now = time.monotonic()
+                    self.server.download_tickets = {k:v for k,v in self.server.download_tickets.items() if v['expires'] > now}
+                    if len(self.server.download_tickets) >= 16:
+                        self.reply(429, {'error': '待下载任务过多，请稍后重试'}); return
+                    key = secrets.token_urlsafe(24)
+                    self.server.download_tickets[key] = {'plan': plan, 'expires': now+300,
+                        'binding': (self.client_address[0], self.headers.get('Cookie', ''))}
+                self.reply(200, {'url': '/api/download?ticket='+key, 'files': len(plan),
+                                 'bytes': sum(p['size'] for p in plan)})
+            except (ValueError, OSError, RuntimeError, sqlite3.Error) as error:
+                self.reply(400, {'error': str(error)})
+            finally:
+                if db is not None:
+                    db.close()
+            return
         if self.path != '/api/login' or not self.server.lan_ip:
             self.reply(404, {'error': '接口不存在'}); return
         peer = self.client_address[0]

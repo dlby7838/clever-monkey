@@ -3,3 +3,7 @@
 .timeline button:disabled{cursor:not-allowed}.video-area video{min-height:200px}
 
 [hidden]{display:none!important}.login-panel{max-width:440px;margin:70px auto;padding:28px;background:white;border:1px solid var(--line);border-radius:8px}.login-panel h1{font-size:25px}.login-panel form{display:flex;flex-direction:column;gap:14px}.login-panel p[role=status]{color:#8c4f1f;font-size:12px}
+
+.batch-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--line)}.batch-bar .checkbox{display:flex;align-items:center;gap:8px;font-size:12px}.batch-bar button{font-size:12px}.batch-bar .primary{margin-left:auto}#selection-count{font-size:12px;color:var(--muted)}.pick-line{display:flex;align-items:center;gap:7px;width:fit-content;font-size:11px;color:var(--green);margin-bottom:12px;cursor:pointer}.pick-line input,.batch-bar input{accent-color:var(--green);width:16px;height:16px;margin:0}.result-preview{display:block;width:100%;padding:0;border:0;background:transparent;text-align:left}.result-preview:hover{filter:none}#download-status{margin:0 0 18px;min-height:20px}@media(max-width:760px){.batch-bar{gap:10px}.batch-bar .primary{margin-left:0}}
+
+.batch-bar button:disabled{cursor:not-allowed}

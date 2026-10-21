@@ -1,6 +1,39 @@
 const $ = (id) => document.getElementById(id);
 let token, selected, activeQuery = '', searchVersion = 0;
 const form = $('search-form');
+const picked = new Map(); let visibleHits = [], preparingDownload = false;
+function formatBytes(size) {
+  const units=['B','KiB','MiB','GiB']; let unit=0;
+  while(size>=1024 && unit<units.length-1) {size/=1024;unit++;}
+  return `${size.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+}
+function updateSelection() {
+  let size=0; for(const hit of picked.values()) size+=Number(hit.evidence.sample.size_bytes || 0);
+  $('selection-count').textContent=`已选${picked.size}条${picked.size ? ' · 约'+formatBytes(size) : ''}`;
+  $('download-selected').disabled=!picked.size || preparingDownload;
+  $('clear-selection').disabled=!picked.size;
+  const all=$('select-all'); all.disabled=!visibleHits.length;
+  all.checked=visibleHits.length>0 && visibleHits.every(h=>picked.has(h.id));
+  all.indeterminate=!all.checked && visibleHits.some(h=>picked.has(h.id));
+  document.querySelectorAll('.pick-video').forEach(input=>{input.checked=picked.has(Number(input.dataset.id));});
+}
+$('select-all').addEventListener('change',event=>{
+  for(const hit of visibleHits) {if(event.target.checked) picked.set(hit.id,hit);else picked.delete(hit.id);}
+  updateSelection();
+});
+$('clear-selection').addEventListener('click',()=>{picked.clear();updateSelection();});
+$('download-selected').addEventListener('click',async()=>{
+  if(!picked.size || preparingDownload) return;
+  const ids=[...picked.keys()]; preparingDownload=true;updateSelection();
+  $('download-status').textContent='正在检查所选原片…';
+  try {
+    const response=await api('/api/download/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ids})});
+    const task=await response.json();
+    const link=node('a');link.href=task.url;link.download='';document.body.append(link);link.click();link.remove();
+    $('download-status').textContent=`已提交${task.files}条原片（${formatBytes(task.bytes)}）的ZIP下载，请查看浏览器下载列表。`;
+  } catch(error) {$('download-status').textContent=error.message;}
+  finally {preparingDownload=false;updateSelection();}
+});
 function node(tag, text, cls) { const e = document.createElement(tag); if(text !== undefined) e.textContent = text; if(cls) e.className = cls; return e; }
 async function api(url, options = {}) {
   const response = await fetch(url, {...options, headers: {'X-Preview-Token': token || '', ...options.headers}});
@@ -14,7 +47,7 @@ function filename(hit) { return hit.evidence.sample.source_relative_path; }
 function parsed(hit) { try { const p = JSON.parse(hit.evidence.case.raw_output); return p && typeof p === 'object' ? p : {}; } catch { return {}; } }
 function select(hit, button) {
   clearPreview(); selected = hit.id;
-  document.querySelectorAll('.result').forEach(e => {e.classList.toggle('selected',e === button); e.setAttribute('aria-pressed',String(e === button));});
+  document.querySelectorAll('.result').forEach(e => {e.classList.toggle('selected',e === button); e.querySelector('.result-preview').setAttribute('aria-pressed',String(e === button));});
   const pane = $('detail'); pane.replaceChildren();
   const area = node('div', undefined, 'video-area'); const play = node('button', '播放预览 ▷', 'primary');
   area.append(play, node('p', '流式快速预览 · 480p · 无音频 · 不生成磁盘副本')); pane.append(area);
@@ -62,6 +95,8 @@ async function runSearch(event) {
     const data=await (await api('/api/search?'+params)).json(); if(version !== searchVersion) return;
     activeQuery=params.get('q') || '';
     clearPreview();selected=null;$('results').replaceChildren();
+    picked.clear();visibleHits=data.results;updateSelection();
+    $('download-status').textContent='勾选素材后，下载到当前设备的浏览器下载目录。重新搜索会清空选择。';
     $('assets').textContent=data.assets; $('search-mode').textContent=({hybrid:'语义＋关键词',semantic:'语义检索',keyword:'关键词检索'})[data.mode] || data.mode;
     $('result-heading').textContent=`${activeQuery ? '检索结果' : '素材列表'} · ${data.results.length}${data.results.length===100?'（最多显示100条）':''}`;
     $('status').textContent='';
@@ -70,12 +105,16 @@ async function runSearch(event) {
       $('detail').replaceChildren(node('div','暂无可预览的结果。','placeholder'));return;
     }
     for(const hit of data.results) {
-      const button=node('button',undefined,'result');button.type='button';
+      const card=node('div',undefined,'result');
+      const pickLine=node('label',undefined,'pick-line'); const checkbox=node('input');checkbox.type='checkbox';checkbox.className='pick-video';checkbox.dataset.id=hit.id;checkbox.setAttribute('aria-label','选择下载：'+filename(hit));
+      checkbox.addEventListener('change',()=>{if(checkbox.checked) picked.set(hit.id,hit);else picked.delete(hit.id);updateSelection();});
+      pickLine.append(checkbox,node('span','选择下载'));card.append(pickLine);
+      const button=node('button',undefined,'result-preview');button.type='button';
       const top=node('div',undefined,'result-top');top.append(node('span',filename(hit),'file'),node('span',`${Number(hit.duration || 0).toFixed(1)} 秒`,'duration'));
       const tags=node('div',undefined,'tags'); tags.append(node('span',hit.review_state==='needs_review'?'基础校验异常':'基础校验通过',hit.review_state==='needs_review'?'tag warn':'tag'));
       const info=parsed(hit); if(typeof info.shot_type==='string') tags.append(node('span',info.shot_type,'tag'));
       if(hit.match && hit.match.start !== null) tags.append(node('span',`匹配片段 ${hit.match.start.toFixed(1)} 秒`,'tag'));
-      button.append(top,node('p',hit.summary || '暂无摘要'),tags);button.onclick=()=>select(hit,button);$('results').append(button);
+      button.append(top,node('p',hit.summary || '暂无摘要'),tags);button.onclick=()=>select(hit,card);card.append(button);$('results').append(card);
     }
     select(data.results[0],$('results').firstChild);
   } catch(error) { if(version===searchVersion) $('status').textContent=error.message; }
@@ -83,7 +122,7 @@ async function runSearch(event) {
 form.addEventListener('submit',runSearch);
 window.addEventListener('pagehide',clearPreview);
 function showLogin() {
-  clearPreview(); token=null; $('results').replaceChildren(); $('detail').replaceChildren();
+  clearPreview(); token=null; picked.clear();visibleHits=[];updateSelection(); $('results').replaceChildren(); $('detail').replaceChildren();
   $('workspace').hidden=true; $('login').hidden=false;
 }
 async function initialize() {

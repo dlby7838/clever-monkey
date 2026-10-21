@@ -44,8 +44,9 @@ class AccessTests(unittest.TestCase):
                 return status,cookie,data
             try:
                 self.assertEqual(request('GET','/')[0],200)
-                for path in ('/api/session','/api/search','/api/preview?id=1&token='+server.token):
+                for path in ('/api/session','/api/search','/api/preview?id=1&token='+server.token,'/api/download?ticket=example'):
                     self.assertEqual(request('GET',path)[0],401)
+                self.assertEqual(request('POST','/api/download/prepare',{'ids':[1]})[0],401)
                 self.assertEqual(request('POST','/api/login',{'password':'wrong'})[0],401)
                 status,cookie,_=request('POST','/api/login',{'password':'correct-password-123'})
                 self.assertEqual(status,200)
