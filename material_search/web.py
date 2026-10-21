@@ -13,7 +13,8 @@ from nas_scanner.safety import local_output
 from .access import private_ipv4, password_file, session_cookie, valid_session
 from .download import build_plan, open_plan, stream_archive, archive_filename, ChunkedWriter
 from .preview import hardware_available, stream_preview
-from .semantic import LocalEncoder, SemanticUnavailable, retrieve
+from .semantic import LocalEncoder, SemanticUnavailable
+from .precision import LocalReranker, search_precise
 from .store import connect
 
 STATIC = Path(__file__).parent / 'static'
@@ -68,6 +69,13 @@ class PreviewServer(ThreadingHTTPServer):
                 self.encoder = LocalEncoder(model_cache)
             except SemanticUnavailable as error:
                 self.semantic_error = str(error)
+        self.reranker = None
+        self.rerank_error = None
+        if load_semantic and self.encoder is not None:
+            try:
+                self.reranker = LocalReranker(model_cache)
+            except SemanticUnavailable as error:
+                self.rerank_error = str(error)
         super().__init__(('0.0.0.0' if lan_ip else '127.0.0.1', port), Handler)
 
 
@@ -114,6 +122,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(401, {'error': '请输入访问口令'}); return
         if parsed.path == '/api/session':
             self.reply(200, {'token': self.server.token, 'semantic_ready': self.server.encoder is not None,
+                             'rerank_ready': self.server.reranker is not None, 'rerank_error': self.server.rerank_error,
                              'semantic_error': self.server.semantic_error}); return
         db = connect(self.server.database)
         try:
@@ -127,9 +136,9 @@ class Handler(BaseHTTPRequestHandler):
                               min_duration=float(val('min')) if val('min') else None,
                               max_duration=float(val('max')) if val('max') else None, include_ocr=val('ocr') == '1')
                 mode = val('mode', 'hybrid')
-                rows = retrieve(db, self.server.encoder, val('q'), limit=20 if val('q').strip() else 100, mode=mode, **kwargs)
+                rows, ranking = search_precise(db, self.server.encoder, self.server.reranker, val('q'), limit=20 if val('q').strip() else 100, mode=mode, **kwargs)
                 count = db.execute('SELECT count(*) FROM search_assets').fetchone()[0]
-                self.reply(200, {'results': rows, 'assets': count, 'mode': mode})
+                self.reply(200, {'results': rows, 'assets': count, 'mode': mode, 'ranking': ranking})
             elif parsed.path == '/api/download':
                 key = val('ticket')
                 binding = (self.client_address[0], self.headers.get('Cookie', ''))

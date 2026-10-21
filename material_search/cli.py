@@ -33,8 +33,14 @@ def main():
     web.add_argument('--model-cache', type=Path, default=Path('data/models'))
     build = commands.add_parser('index', help='准备本地中文模型并增量建立向量索引')
     build.add_argument('--model-cache', type=Path, default=Path('data/models'))
+    prepare = commands.add_parser('prepare-reranker', help='下载本地中文精排模型（约1GB）')
+    prepare.add_argument('--model-cache', type=Path, default=Path('data/models'))
     args = parser.parse_args()
     try:
+        if args.command == 'prepare-reranker':
+            from .precision import LocalReranker
+            print(LocalReranker(args.model_cache, download=True).identity)
+            return
         if args.command == 'serve':
             from .web import serve
             serve(args.db, args.media_root, args.port, args.model_cache, args.lan_ip, args.password_file)

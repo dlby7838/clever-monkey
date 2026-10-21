@@ -67,7 +67,7 @@ function select(hit, button) {
   play.onclick = () => loadPreview();
   const body = node('div', undefined, 'detail-body'); pane.append(body);
   body.append(node('h3', filename(hit)),node('p', hit.summary || '此素材暂缺可用摘要。'));
-  if(hit.match && ['timeline','visual_description'].includes(hit.match.channel)) {
+  if(hit.match && ['timeline','visual_description','actions','summary'].includes(hit.match.channel)) {
     body.append(node('div','匹配到的内容','section-label'),node('p',hit.match.text));
   }
   const p = parsed(hit);
@@ -97,9 +97,9 @@ async function runSearch(event) {
     clearPreview();selected=null;$('results').replaceChildren();
     picked.clear();visibleHits=data.results;updateSelection();
     $('download-status').textContent='勾选素材后，下载到当前设备的浏览器下载目录。重新搜索会清空选择。';
-    $('assets').textContent=data.assets; $('search-mode').textContent=({hybrid:'语义＋关键词',semantic:'语义检索',keyword:'关键词检索'})[data.mode] || data.mode;
+    $('assets').textContent=data.assets; $('search-mode').textContent=({hybrid:(data.ranking?.reranked ? '语义＋精准排序' : (data.ranking?.uncertain ? '语义＋关键词（精排未确定）' : '语义＋关键词（精排未启用）')),semantic:'语义检索',keyword:'关键词检索'})[data.mode] || data.mode;
     $('result-heading').textContent=`${activeQuery ? '检索结果' : '素材列表'} · ${data.results.length}${data.results.length===100?'（最多显示100条）':''}`;
-    $('status').textContent='';
+    $('status').textContent=data.ranking?.uncertain ? '这次查询的匹配较不确定，请结合预览确认。' : (data.ranking?.action_filter ? '已优先筛选描述中明确记录开袋动作的素材。' : '');
     if(!data.results.length) {
       const empty=node('div',undefined,'placeholder');empty.append(node('h3','没有找到匹配素材'),node('p','减少关键词或放宽筛选条件再试一次。'));$('results').append(empty);
       $('detail').replaceChildren(node('div','暂无可预览的结果。','placeholder'));return;
